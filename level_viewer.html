@@ -1,0 +1,1733 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Level Map Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-void: #08090d;
+  --bg-primary: #0e1015;
+  --bg-surface: #14161e;
+  --bg-elevated: #1a1d28;
+  --bg-hover: #222634;
+  --border-subtle: #262a3a;
+  --border-active: #3d4463;
+  --text-primary: #dfe3f0;
+  --text-secondary: #8a90a8;
+  --text-muted: #505570;
+  --accent: #5b8def;
+  --accent-glow: rgba(91, 141, 239, 0.25);
+  --accent-dim: #3a5da0;
+  --orange: #e8854a;
+  --cyan: #4ac5c5;
+  --red: #e05555;
+  --green: #50b87a;
+  --yellow: #d4a844;
+  --font-body: 'DM Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --transition: 180ms ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-void); color: var(--text-primary); font-family: var(--font-body); font-size: 13px; }
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 4px; }
+::selection { background: var(--accent); color: #fff; }
+
+/* Welcome */
+#welcome { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: var(--bg-void); transition: opacity 0.5s ease, visibility 0.5s ease; }
+#welcome.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+.drop-zone { position: relative; width: 520px; padding: 64px 48px; text-align: center; background: var(--bg-surface); border: 1.5px dashed var(--border-active); border-radius: var(--radius-lg); transition: border-color var(--transition), box-shadow var(--transition); }
+.drop-zone.drag-over { border-color: var(--accent); box-shadow: 0 0 40px var(--accent-glow), inset 0 0 30px var(--accent-glow); }
+.drop-zone-icon { width: 72px; height: 72px; margin: 0 auto 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--bg-elevated); border: 1px solid var(--border-subtle); }
+.drop-zone-icon svg { opacity: 0.6; }
+.drop-zone h1 { font-family: var(--font-mono); font-weight: 600; font-size: 22px; letter-spacing: -0.5px; margin-bottom: 10px; }
+.drop-zone p { color: var(--text-secondary); margin-bottom: 28px; line-height: 1.6; }
+.drop-zone-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--accent); background: transparent; border: 1px solid var(--accent-dim); border-radius: var(--radius); cursor: pointer; transition: all var(--transition); }
+.drop-zone-btn:hover { background: var(--accent-glow); border-color: var(--accent); }
+#file-input { display: none; }
+.drop-zone-hint { margin-top: 20px; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+/* App Layout */
+#app { display: none; width: 100%; height: 100%; grid-template-columns: 240px 1fr; grid-template-rows: 44px 1fr; grid-template-areas: "toolbar toolbar" "sidebar viewport"; }
+#app.active { display: grid; }
+
+/* Toolbar */
+#toolbar { grid-area: toolbar; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; gap: 12px; background: var(--bg-primary); border-bottom: 1px solid var(--border-subtle); z-index: 10; }
+.toolbar-left { display: flex; align-items: center; gap: 14px; }
+.toolbar-right { display: flex; align-items: center; gap: 6px; }
+#level-name { font-family: var(--font-mono); font-weight: 600; font-size: 13px; letter-spacing: -0.3px; }
+.toolbar-divider { width: 1px; height: 18px; background: var(--border-subtle); }
+.toolbar-stat { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.toolbar-stat span { color: var(--text-secondary); }
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius); cursor: pointer; transition: all var(--transition); white-space: nowrap; }
+.btn:hover { color: var(--text-primary); background: var(--bg-hover); border-color: var(--border-active); }
+.btn.active { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-glow); }
+.btn.drawing-active { color: var(--green); border-color: var(--green); background: rgba(80,184,122,0.15); animation: pulse-border 1.5s ease infinite; }
+@keyframes pulse-border { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 8px rgba(80,184,122,0.3); } }
+
+/* Sidebar */
+#sidebar { grid-area: sidebar; display: flex; flex-direction: column; gap: 0; background: var(--bg-primary); border-right: 1px solid var(--border-subtle); overflow-y: auto; padding-bottom: 16px; }
+.sidebar-section { padding: 14px 14px 10px; border-bottom: 1px solid var(--border-subtle); }
+.sidebar-section:last-child { border-bottom: none; }
+.section-title { font-family: var(--font-mono); font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 10px; }
+
+/* Floor buttons */
+.floor-btn-grid { display: flex; flex-direction: column; gap: 3px; }
+.floor-btn { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: var(--radius); cursor: pointer; transition: all var(--transition); text-align: left; }
+.floor-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.floor-btn.active { background: var(--bg-elevated); border-color: var(--border-active); color: var(--text-primary); }
+.floor-color-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.floor-btn-label { flex: 1; }
+.floor-btn-count { font-size: 10px; color: var(--text-muted); }
+
+/* Path drawing UI */
+.path-input-row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.path-name-input { flex: 1; padding: 6px 8px; font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius); outline: none; }
+.path-name-input:focus { border-color: var(--accent); }
+.path-color-input { width: 28px; height: 28px; padding: 0; border: 1px solid var(--border-subtle); border-radius: var(--radius); cursor: pointer; background: transparent; }
+.path-color-input::-webkit-color-swatch-wrapper { padding: 2px; }
+.path-color-input::-webkit-color-swatch { border: none; border-radius: 3px; }
+.path-draw-status { padding: 8px 10px; background: rgba(80,184,122,0.08); border: 1px solid rgba(80,184,122,0.2); border-radius: var(--radius); margin-bottom: 8px; font-family: var(--font-mono); font-size: 11px; }
+.path-draw-status .status-label { color: var(--green); font-weight: 500; }
+.path-draw-status .status-info { color: var(--text-secondary); margin-top: 4px; }
+.path-draw-actions { display: flex; gap: 6px; }
+.path-draw-actions .btn { flex: 1; justify-content: center; }
+
+/* Path list items */
+.path-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius); transition: background var(--transition); margin-bottom: 2px; }
+.path-item:hover { background: var(--bg-hover); }
+.path-item-color { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.path-item-name { flex: 1; font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.path-item-pts { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.path-item-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; color: var(--text-muted); cursor: pointer; border-radius: 3px; font-size: 13px; flex-shrink: 0; }
+.path-item-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.path-item-btn.delete:hover { color: var(--red); }
+
+/* Legend */
+.legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 11px; color: var(--text-secondary); }
+.legend-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.08); }
+
+/* Info panel */
+#info-panel { font-family: var(--font-mono); font-size: 11px; line-height: 1.7; color: var(--text-secondary); }
+#info-panel .info-label { color: var(--text-muted); }
+#info-panel .info-value { color: var(--text-primary); }
+
+/* Viewport */
+#viewport { grid-area: viewport; position: relative; background: var(--bg-void); overflow: hidden; }
+#viewport canvas { display: block; }
+#viewport.draw-mode { cursor: crosshair !important; }
+.label-renderer { position: absolute !important; top: 0; left: 0; pointer-events: none; }
+.area-label { padding: 3px 8px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text-primary); background: rgba(14, 16, 21, 0.85); border: 1px solid var(--border-active); border-radius: 4px; white-space: nowrap; pointer-events: auto; backdrop-filter: blur(4px); cursor: grab; user-select: none; }
+.area-label:active { cursor: grabbing; }
+#tooltip { position: fixed; z-index: 50; padding: 6px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-active); border-radius: var(--radius); pointer-events: none; opacity: 0; transition: opacity 120ms ease; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+#tooltip.visible { opacity: 1; }
+
+/* Label Modal */
+#label-modal { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; background: rgba(8, 9, 13, 0.7); backdrop-filter: blur(6px); }
+#label-modal.active { display: flex; }
+.modal-card { width: 360px; padding: 24px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+.modal-card h3 { font-family: var(--font-mono); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.modal-card .modal-sub { font-size: 11px; color: var(--text-muted); margin-bottom: 16px; font-family: var(--font-mono); }
+.modal-card input[type="text"] { width: 100%; padding: 9px 12px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border-active); border-radius: var(--radius); outline: none; transition: border-color var(--transition); }
+.modal-card input[type="text"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+.modal-actions .btn-primary { padding: 7px 18px; font-family: var(--font-mono); font-size: 12px; color: #fff; background: var(--accent); border: none; border-radius: var(--radius); cursor: pointer; transition: all var(--transition); }
+.modal-actions .btn-primary:hover { filter: brightness(1.15); }
+.modal-actions .btn-ghost { padding: 7px 14px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-subtle); border-radius: var(--radius); cursor: pointer; transition: all var(--transition); }
+.modal-actions .btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.modal-actions .btn-danger { padding: 7px 14px; font-family: var(--font-mono); font-size: 12px; color: var(--red); background: transparent; border: 1px solid rgba(224,85,85,0.25); border-radius: var(--radius); cursor: pointer; transition: all var(--transition); margin-right: auto; }
+.modal-actions .btn-danger:hover { background: rgba(224,85,85,0.1); }
+
+.hidden { display: none !important; }
+
+/* Camera speed slider */
+.cam-speed-group { display: flex; align-items: center; gap: 6px; }
+.cam-speed-group label { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.cam-speed-slider { -webkit-appearance: none; appearance: none; width: 72px; height: 4px; background: var(--border-subtle); border-radius: 2px; outline: none; cursor: pointer; }
+.cam-speed-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+.cam-speed-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: none; cursor: pointer; }
+.cam-speed-val { font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); min-width: 24px; text-align: right; }
+</style>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.162.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+
+<div id="welcome">
+  <div class="drop-zone" id="drop-zone">
+    <div class="drop-zone-icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#8a90a8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/>
+      </svg>
+    </div>
+    <h1>Level Map Viewer</h1>
+    <p>Drop your exported <code style="color:var(--accent);font-family:var(--font-mono);font-size:12px;">level_data.json</code> file here to visualize the blockout layout in 3D.</p>
+    <button class="drop-zone-btn" id="btn-browse">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Select File
+    </button>
+    <input type="file" id="file-input" accept=".json">
+    <div class="drop-zone-hint">Supports JSON exported by export_blockout_full.py</div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="toolbar">
+    <div class="toolbar-left">
+      <div id="level-name">Level</div>
+      <div class="toolbar-divider"></div>
+      <div class="toolbar-stat" id="stat-actors"></div>
+      <div class="toolbar-stat" id="stat-floors"></div>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn active" id="btn-deco-toggle" title="Toggle decoration layer">Deco</button>
+      <button class="btn" id="btn-top" title="Top-down view">Top</button>
+      <button class="btn" id="btn-front" title="Front view">Front</button>
+      <button class="btn" id="btn-reset" title="Reset camera">Reset</button>
+      <button class="btn" id="btn-reload" title="Load another JSON">Load</button>
+      <button class="btn" id="btn-export-labels" title="Export labels">Labels&darr;</button>
+      <button class="btn" id="btn-import-labels" title="Import labels">Labels&uarr;</button>
+      <button class="btn" id="btn-share" title="Export self-contained HTML for sharing" style="color:var(--green);border-color:rgba(80,184,122,0.3);">Share</button>
+      <div class="toolbar-divider"></div>
+      <div class="cam-speed-group">
+        <label>Speed</label>
+        <input type="range" class="cam-speed-slider" id="cam-speed-slider" min="0" max="1" step="0.01" value="0.5">
+        <span class="cam-speed-val" id="cam-speed-val">0.50</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div class="sidebar-section">
+      <div class="section-title">Floors</div>
+      <div class="floor-btn-grid" id="floor-controls"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-title">Draw Paths</div>
+      <!-- Idle state -->
+      <div id="path-draw-idle">
+        <div class="path-input-row">
+          <input type="text" class="path-name-input" id="path-name-input" placeholder="Path name...">
+          <input type="color" class="path-color-input" id="path-color-input" value="#e8854a">
+        </div>
+        <button class="btn" id="btn-start-draw" style="width:100%;justify-content:center;">+ New Path</button>
+      </div>
+      <!-- Drawing state -->
+      <div id="path-draw-active" class="hidden">
+        <div class="path-draw-status">
+          <div class="status-label" id="drawing-status-label">Drawing...</div>
+          <div class="status-info"><span id="drawing-point-count">0</span> points &mdash; click boxes or empty space</div>
+        </div>
+        <div class="path-draw-actions">
+          <button class="btn" id="btn-undo-point">Undo</button>
+          <button class="btn" id="btn-cancel-draw" style="color:var(--red);">Cancel</button>
+          <button class="btn" id="btn-finish-draw" style="color:var(--green);">Finish</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-title">Paths</div>
+      <div id="path-list"><span style="color:var(--text-muted);font-size:11px;">No paths yet</span></div>
+      <div style="margin-top:8px;display:flex;gap:6px;">
+        <button class="btn" id="btn-export-paths" style="flex:1;justify-content:center;font-size:10px;">Export</button>
+        <button class="btn" id="btn-import-paths" style="flex:1;justify-content:center;font-size:10px;">Import</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-title">Legend</div>
+      <div id="legend"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-title">Selected</div>
+      <div id="info-panel"><span style="color:var(--text-muted);">Click a box to inspect</span></div>
+    </div>
+  </div>
+
+  <div id="viewport"></div>
+</div>
+
+<div id="tooltip"></div>
+
+<div id="label-modal">
+  <div class="modal-card">
+    <h3>Area Label</h3>
+    <div class="modal-sub" id="modal-actor-name">&mdash;</div>
+    <input type="text" id="label-input" placeholder="Enter area name..." autocomplete="off">
+    <div class="modal-actions">
+      <button class="btn-danger" id="btn-del-label">Delete</button>
+      <button class="btn-ghost" id="btn-cancel-label">Cancel</button>
+      <button class="btn-primary" id="btn-save-label">Save</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="label-file-input" accept=".json" style="display:none;">
+<input type="file" id="path-file-input" accept=".json" style="display:none;">
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// ============================================================
+// Constants
+// ============================================================
+const FLOOR_COLORS = [0x5b8def,0x50b87a,0xe8854a,0xb07cd8,0xe05577,0xd4a844,0x4ac5c5,0xc76e5a];
+const FLOOR_COLOR_CSS = ['#5b8def','#50b87a','#e8854a','#b07cd8','#e05577','#d4a844','#4ac5c5','#c76e5a'];
+const HIGHLIGHT_COLOR = 0xffd666;
+const DECO_COLOR = 0x888888;
+const DECO_COLOR_CSS = '#888888';
+
+// ============================================================
+// State
+// ============================================================
+let levelData = null;
+let scene, camera, renderer, labelRenderer, controls;
+let raycaster, mouse;
+let groundPlane;                    // invisible plane for free-click raycasting
+let gridY = 0;                      // ground level Y
+const actorMeshes = [];
+const actorDataMap = new Map();
+const floorGroups = {};
+const decorationGroups = {};
+const labelObjects = {};
+let selectedMesh = null;
+let hoveredMesh = null;
+let activeFloor = 'all';
+let showDecoration = true;
+let levelMaxSpan = 2000;
+let labelsStore = {};
+let labelOffsetsStore = {};  // { actorName: [x, y, z] } local positions for dragged labels
+
+// Label drag state
+let draggingLabel = null;      // { actorName, mesh, labelObj }
+
+// Custom path drawing state
+let isDrawing = false;
+let currentWaypoints = [];          // [{position: THREE.Vector3, actorName: string|null}]
+let currentPathColor = '#e8854a';
+let previewLine = null;
+let waypointMarkers = [];           // temp sphere meshes while drawing
+let customPaths = [];               // [{id, name, color, waypoints, group (THREE.Group)}]
+let pathIdCounter = 0;
+
+// WASD fly camera state
+const keysPressed = {};
+let cameraSpeed = 0.5;  // 0..1 slider value
+
+// First-person look (right mouse drag)
+let fpLookActive = false;
+let fpPrevX = 0, fpPrevY = 0;
+
+// Capture clean body HTML at load time, before Three.js modifies the DOM
+const _bodySnapshot = (() => {
+  const c = document.body.cloneNode(true);
+  c.querySelectorAll('script').forEach(s => s.remove());
+  return c.innerHTML;
+})();
+
+// ============================================================
+// Coordinate Conversion (UE -> Three.js)
+// ============================================================
+function uePos(x, y, z) { return new THREE.Vector3(x, z, y); }
+function ueSize(sx, sy, sz) { return { w: sx, h: sz, d: sy }; }
+function ueRot(pitch, yaw, roll) {
+  const d = Math.PI / 180;
+  // UE FRotator (left-hand, ZYX intrinsic) → Three.js Euler (right-hand)
+  // M_ue_col = Rz(Yaw)·Ry(-Pitch)·Rx(-Roll)
+  // After P·M·P⁻¹ (swap Y↔Z): R_three = Ry(-Yaw)·Rz(Pitch)·Rx(Roll) = Euler(Roll,-Yaw,Pitch,'YZX')
+  return new THREE.Euler(roll * d, -yaw * d, pitch * d, 'YZX');
+}
+
+// ============================================================
+// Three.js Setup
+// ============================================================
+function initScene() {
+  const viewport = document.getElementById('viewport');
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x08090d);
+
+  camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 1, 500000);
+  camera.position.set(2000, 2000, 2000);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+  viewport.appendChild(renderer.domElement);
+
+  labelRenderer = new CSS2DRenderer();
+  labelRenderer.setSize(viewport.clientWidth, viewport.clientHeight);
+  labelRenderer.domElement.classList.add('label-renderer');
+  viewport.appendChild(labelRenderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = true;
+  controls.minDistance = 50;
+  controls.maxDistance = 500000;
+  // Swap left/right: left=pan, middle=dolly, right=first-person look (custom, not OrbitControls)
+  controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY };
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+  scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  dirLight.position.set(1, 2, 1).normalize();
+  scene.add(dirLight);
+  const hemiLight = new THREE.HemisphereLight(0xdfe3f0, 0x14161e, 0.4);
+  scene.add(hemiLight);
+
+  raycaster = new THREE.Raycaster();
+  mouse = new THREE.Vector2();
+  window.addEventListener('resize', onResize);
+}
+
+function onResize() {
+  const viewport = document.getElementById('viewport');
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  labelRenderer.setSize(w, h);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  // Adaptive pan/rotate speed based on distance (unaffected by speed slider)
+  const dist = camera.position.distanceTo(controls.target);
+  const threshold = levelMaxSpan * 0.1;
+  if (dist < threshold) {
+    const factor = threshold / Math.max(dist, 0.1);
+    controls.panSpeed = Math.min(factor, 20);
+    controls.rotateSpeed = Math.min(1 + factor * 0.3, 5);
+  } else {
+    controls.panSpeed = 1.0;
+    controls.rotateSpeed = 1.0;
+  }
+
+  // WASD fly camera (only this uses the speed slider)
+  processWASD(dist);
+
+  controls.update();
+  // Update preview line endpoint while drawing
+  if (isDrawing && previewLine && currentWaypoints.length > 0) {
+    updatePreviewLine();
+  }
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+
+function processWASD(dist) {
+  const hasInput = keysPressed['w'] || keysPressed['s'] || keysPressed['a'] || keysPressed['d'] || keysPressed['q'] || keysPressed['e'];
+  if (!hasInput) return;
+
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+
+  // Speed slider: 0=frozen, 1=full speed. Linear multiplier.
+  if (cameraSpeed === 0) return;
+  const distFactor = Math.max(dist * 0.002, 1.0);
+  const boost = keysPressed['shift'] ? 3.0 : 1.0;
+  const speed = cameraSpeed * distFactor * boost;
+
+  const move = new THREE.Vector3();
+  if (keysPressed['w']) move.addScaledVector(forward, speed);
+  if (keysPressed['s']) move.addScaledVector(forward, -speed);
+  if (keysPressed['d']) move.addScaledVector(right, speed);
+  if (keysPressed['a']) move.addScaledVector(right, -speed);
+  if (keysPressed['e']) move.addScaledVector(up, speed);
+  if (keysPressed['q']) move.addScaledVector(up, -speed);
+
+  // Move both camera and orbit target to preserve orbit behavior
+  camera.position.add(move);
+  controls.target.add(move);
+}
+
+// ============================================================
+// Shape Geometry Builders
+// ============================================================
+function createBoxGeom(dim) {
+  const geom = new THREE.BoxGeometry(dim.w, dim.h, dim.d);
+  geom.translate(dim.w / 2, dim.h / 2, dim.d / 2);
+  return { geometry: geom, useScale: false };
+}
+
+function createCylinderGeom(actor) {
+  const props = actor.shapeProperties || {};
+  const scale = actor.scale || { x: 1, y: 1, z: 1 };
+  let radius, height, segments;
+
+  if (props.cylinderRadius != null && props.cylinderHeight != null) {
+    radius = props.cylinderRadius;
+    height = props.cylinderHeight;
+  } else {
+    // Fallback: derive from actualSize bounding box
+    const size = actor.actualSize || actor.boxSize;
+    if (!size) return null;
+    const dim = ueSize(size.x, size.y, size.z);
+    radius = Math.max(dim.w, dim.d) / 2;
+    height = dim.h;
+    return { geometry: (() => { const g = new THREE.CylinderGeometry(radius, radius, height, 24); g.translate(0, height / 2, 0); return g; })(), useScale: false };
+  }
+
+  const quality = props.cylinderQuality != null ? props.cylinderQuality : 2;
+  segments = quality === 0 ? 6 : 32;
+
+  const geom = new THREE.CylinderGeometry(radius, radius, height, segments);
+  // Anchor at bottom center: translate up by half height
+  geom.translate(0, height / 2, 0);
+  // Return with useScale=true so mesh.scale applies UE scale
+  return { geometry: geom, useScale: true, scaleVec: new THREE.Vector3(scale.x, scale.z, scale.y) };
+}
+
+function createStairsGeom(actor) {
+  const props = actor.shapeProperties || {};
+  const scale = actor.scale || { x: 1, y: 1, z: 1 };
+
+  let sx, sy, sz, steps;
+  if (props.stairsSize && props.numberOfSteps) {
+    sx = props.stairsSize.x;  // width (UE X)
+    sy = props.stairsSize.y;  // depth/progression (UE Y)
+    sz = props.stairsSize.z;  // total height (UE Z)
+    steps = props.numberOfSteps;
+  } else {
+    // Fallback: single box
+    const size = actor.actualSize || actor.boxSize;
+    if (!size) return null;
+    return createBoxGeom(ueSize(size.x, size.y, size.z));
+  }
+
+  // UE coords: X=width, Y=depth(progression), Z=height
+  // Three.js after ueSize: w=X(width), d=Y(depth), h=Z(height)
+  // Each step i (0..N-1):
+  //   width  = sx (full width)
+  //   depth  = sy / N
+  //   height = (i+1) * sz / N
+  //   UE offset: y = i * sy / N (along progression axis)
+  // Anchor at bottom corner, same as box.
+  const stepDepth = sy / steps;
+  const stepH = sz / steps;
+  const geom = new THREE.BufferGeometry();
+  const positions = [];
+  const normals = [];
+  const indices = [];
+
+  for (let i = 0; i < steps; i++) {
+    const h = (i + 1) * stepH;   // height of this column
+    const y0 = i * stepDepth;    // UE Y start
+    const y1 = y0 + stepDepth;   // UE Y end
+    // In Three.js (after ueSize mapping): w=sx, localH=h, d=stepDepth
+    // Translate: x from 0..sx, y(three) from 0..h, z(three) from y0..y1
+    const vBase = positions.length / 3;
+
+    // 8 corners of this step box
+    // 0: (0,  0, y0)  1: (sx, 0, y0)  2: (sx, h, y0)  3: (0,  h, y0)  -- front face (neg Z)
+    // 4: (0,  0, y1)  5: (sx, 0, y1)  6: (sx, h, y1)  7: (0,  h, y1)  -- back face (pos Z)
+    positions.push(
+      0,  0,  y0,   sx, 0,  y0,   sx, h,  y0,   0,  h,  y0,
+      0,  0,  y1,   sx, 0,  y1,   sx, h,  y1,   0,  h,  y1
+    );
+
+    // 6 faces x 2 triangles x 3 indices
+    const v = vBase;
+    indices.push(
+      // front (z-)
+      v+0, v+2, v+1,  v+0, v+3, v+2,
+      // back (z+)
+      v+4, v+5, v+6,  v+4, v+6, v+7,
+      // top (y+)
+      v+3, v+7, v+6,  v+3, v+6, v+2,
+      // bottom (y-)
+      v+0, v+1, v+5,  v+0, v+5, v+4,
+      // right (x+)
+      v+1, v+2, v+6,  v+1, v+6, v+5,
+      // left (x-)
+      v+0, v+4, v+7,  v+0, v+7, v+3
+    );
+
+    // Simple normals per face (flat shading) — use dummy, we'll use computeVertexNormals
+    for (let n = 0; n < 8; n++) normals.push(0, 0, 0);
+  }
+
+  geom.setIndex(indices);
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geom.computeVertexNormals();
+
+  return { geometry: geom, useScale: true, scaleVec: new THREE.Vector3(scale.x, scale.z, scale.y) };
+}
+
+function createActorGeometry(actor, dim) {
+  const shapeType = actor.shapeType || 'box';
+  switch (shapeType) {
+    case 'cylinder': return createCylinderGeom(actor);
+    case 'stairs': return createStairsGeom(actor);
+    // Future shape types go here
+    default: return createBoxGeom(dim);
+  }
+}
+
+// ============================================================
+// Scene Building
+// ============================================================
+function buildScene(data) {
+  // Clear everything except lights (first 3 children)
+  while (scene.children.length > 3) scene.remove(scene.children[scene.children.length - 1]);
+  actorMeshes.length = 0;
+  actorDataMap.clear();
+  Object.keys(floorGroups).forEach(k => delete floorGroups[k]);
+  Object.keys(decorationGroups).forEach(k => delete decorationGroups[k]);
+  Object.values(labelObjects).forEach(obj => { if (obj.parent) obj.parent.remove(obj); });
+  Object.keys(labelObjects).forEach(k => delete labelObjects[k]);
+  customPaths.forEach(p => { if (p.group) scene.remove(p.group); });
+  customPaths.length = 0;
+  pathIdCounter = 0;
+
+  data.floors.forEach(fi => {
+    const group = new THREE.Group();
+    group.userData.floor = fi;
+    floorGroups[fi] = group;
+    scene.add(group);
+    const decoGroup = new THREE.Group();
+    decoGroup.userData.floor = fi;
+    decoGroup.userData.isDecoration = true;
+    decorationGroups[fi] = decoGroup;
+    scene.add(decoGroup);
+  });
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+
+  data.actors.forEach(actor => {
+    const pos = uePos(actor.location.x, actor.location.y, actor.location.z);
+    const rot = ueRot(actor.rotation.pitch, actor.rotation.yaw, actor.rotation.roll);
+    const floorIdx = actor.floor != null ? actor.floor : 0;
+    const isDeco = actor.isDecoration || false;
+    const colorHex = isDeco ? DECO_COLOR : FLOOR_COLORS[floorIdx % FLOOR_COLORS.length];
+
+    // Build geometry based on shape type
+    const size = actor.actualSize || actor.boxSize;
+    const dim = size ? ueSize(size.x, size.y, size.z) : null;
+    const result = createActorGeometry(actor, dim);
+    if (!result) return;
+
+    const { geometry, useScale, scaleVec } = result;
+
+    // Update bounds
+    const shapeType = actor.shapeType || 'box';
+    const props = actor.shapeProperties || {};
+    const s = actor.scale || { x:1, y:1, z:1 };
+    if (shapeType === 'cylinder' && useScale) {
+      const r = (props.cylinderRadius || 50) * Math.max(s.x, s.y);
+      const h = (props.cylinderHeight || 100) * s.z;
+      minX = Math.min(minX, pos.x - r); maxX = Math.max(maxX, pos.x + r);
+      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + h);
+      minZ = Math.min(minZ, pos.z - r); maxZ = Math.max(maxZ, pos.z + r);
+    } else if (shapeType === 'stairs' && props.stairsSize) {
+      // Corner pivot, size in UE coords: X=width, Y=depth, Z=height, mapped via scale
+      const sw = props.stairsSize.x * s.x;
+      const sd = props.stairsSize.y * s.y;
+      const sh = props.stairsSize.z * s.z;
+      // After ueSize: w=sw, h=sh, d=sd
+      minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + sw);
+      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + sh);
+      minZ = Math.min(minZ, pos.z); maxZ = Math.max(maxZ, pos.z + sd);
+    } else if (dim) {
+      minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + dim.w);
+      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + dim.h);
+      minZ = Math.min(minZ, pos.z); maxZ = Math.max(maxZ, pos.z + dim.d);
+    }
+
+    const material = new THREE.MeshPhongMaterial({
+      color: colorHex,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(pos);
+    mesh.rotation.copy(rot);
+    if (useScale && scaleVec) mesh.scale.copy(scaleVec);
+
+    mesh.userData.actorName = actor.name;
+    mesh.userData.floor = floorIdx;
+    mesh.userData.baseColor = colorHex;
+    mesh.userData.isDecoration = isDeco;
+    actorMeshes.push(mesh);
+    actorDataMap.set(mesh.uuid, actor);
+
+    if (isDeco) {
+      const group = decorationGroups[floorIdx] || decorationGroups[data.floors[0]];
+      if (group) group.add(mesh);
+      else scene.add(mesh);
+    } else {
+      const group = floorGroups[floorIdx] || floorGroups[data.floors[0]];
+      if (group) group.add(mesh);
+      else scene.add(mesh);
+    }
+  });
+
+  // Grid
+  const spanX = maxX - minX || 2000;
+  const spanZ = maxZ - minZ || 2000;
+  const gridSize = Math.max(spanX, spanZ) * 1.8;
+  gridY = minY - 5;
+  const grid = new THREE.GridHelper(gridSize, 40, 0x1e2230, 0x14171f);
+  grid.position.set((minX + maxX) / 2, gridY, (minZ + maxZ) / 2);
+  scene.add(grid);
+
+  const axHelper = new THREE.AxesHelper(gridSize * 0.35);
+  axHelper.position.copy(grid.position);
+  scene.add(axHelper);
+
+  // Invisible ground plane for free-click raycasting during path drawing
+  const gpGeom = new THREE.PlaneGeometry(gridSize * 3, gridSize * 3);
+  gpGeom.rotateX(-Math.PI / 2);
+  const gpMat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
+  groundPlane = new THREE.Mesh(gpGeom, gpMat);
+  groundPlane.position.set((minX + maxX) / 2, gridY, (minZ + maxZ) / 2);
+  groundPlane.userData.isGround = true;
+  scene.add(groundPlane);
+
+  // Camera framing
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+  const maxSpan = Math.max(spanX, maxY - minY, spanZ);
+  levelMaxSpan = maxSpan;
+
+  // Dynamically adapt camera/controls/fog to level size
+  const farPlane = Math.max(maxSpan * 10, 500000);
+  camera.far = farPlane;
+  camera.near = Math.max(1, maxSpan * 0.0005);
+  camera.updateProjectionMatrix();
+  controls.maxDistance = farPlane * 0.8;
+  scene.fog = new THREE.FogExp2(0x08090d, Math.min(0.00008, 2.0 / farPlane));
+
+  controls.target.set(cx, cy, cz);
+  camera.position.set(cx + maxSpan * 0.8, cy + maxSpan * 0.9, cz + maxSpan * 0.8);
+  controls.update();
+
+  loadLabels(); applyLabels();
+  loadCustomPaths(); renderAllCustomPaths();
+}
+
+// ============================================================
+// Custom Path Drawing
+// ============================================================
+function startDrawing() {
+  const nameInput = document.getElementById('path-name-input');
+  const colorInput = document.getElementById('path-color-input');
+  const name = nameInput.value.trim() || `Path ${pathIdCounter + 1}`;
+
+  isDrawing = true;
+  currentWaypoints = [];
+  currentPathColor = colorInput.value;
+  waypointMarkers = [];
+
+  // Create preview line (will be updated each frame)
+  const lineGeom = new THREE.BufferGeometry();
+  lineGeom.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+  const lineMat = new THREE.LineBasicMaterial({ color: currentPathColor, transparent: true, opacity: 0.5 });
+  previewLine = new THREE.Line(lineGeom, lineMat);
+  scene.add(previewLine);
+
+  // Disable orbit on right-click (we use right-click for undo)
+  controls.enablePan = false;
+
+  document.getElementById('path-draw-idle').classList.add('hidden');
+  document.getElementById('path-draw-active').classList.remove('hidden');
+  document.getElementById('drawing-status-label').textContent = `Drawing: ${name}`;
+  document.getElementById('drawing-point-count').textContent = '0';
+  document.getElementById('viewport').classList.add('draw-mode');
+  document.getElementById('btn-start-draw').dataset.pathName = name;
+}
+
+function finishDrawing() {
+  if (currentWaypoints.length < 2) {
+    alert('Need at least 2 points to create a path.');
+    return;
+  }
+  const name = document.getElementById('btn-start-draw').dataset.pathName || 'Path';
+  const pathData = {
+    id: pathIdCounter++,
+    name: name,
+    color: currentPathColor,
+    waypoints: currentWaypoints.map(w => ({
+      position: [w.position.x, w.position.y, w.position.z],
+      actorName: w.actorName
+    }))
+  };
+  customPaths.push(pathData);
+  renderCustomPath(pathData);
+  saveCustomPaths();
+  updatePathList();
+  cleanupDrawing();
+}
+
+function cancelDrawing() {
+  cleanupDrawing();
+}
+
+function cleanupDrawing() {
+  isDrawing = false;
+  // Remove preview line
+  if (previewLine) { scene.remove(previewLine); previewLine = null; }
+  // Remove temp markers
+  waypointMarkers.forEach(m => scene.remove(m));
+  waypointMarkers = [];
+  currentWaypoints = [];
+
+  controls.enablePan = true;
+  document.getElementById('path-draw-idle').classList.remove('hidden');
+  document.getElementById('path-draw-active').classList.add('hidden');
+  document.getElementById('viewport').classList.remove('draw-mode');
+}
+
+function addWaypoint(position, actorName) {
+  currentWaypoints.push({ position: position.clone(), actorName: actorName || null });
+
+  // Add marker sphere
+  const sphereGeom = new THREE.SphereGeometry(8, 8, 8);
+  const sphereMat = new THREE.MeshBasicMaterial({ color: currentPathColor });
+  const sphere = new THREE.Mesh(sphereGeom, sphereMat);
+  sphere.position.copy(position);
+  scene.add(sphere);
+  waypointMarkers.push(sphere);
+
+  // Update preview line to include all waypoints
+  updatePreviewLineGeometry();
+  document.getElementById('drawing-point-count').textContent = currentWaypoints.length;
+}
+
+function undoWaypoint() {
+  if (currentWaypoints.length === 0) return;
+  currentWaypoints.pop();
+  const marker = waypointMarkers.pop();
+  if (marker) scene.remove(marker);
+  updatePreviewLineGeometry();
+  document.getElementById('drawing-point-count').textContent = currentWaypoints.length;
+}
+
+function updatePreviewLineGeometry() {
+  if (!previewLine) return;
+  const positions = [];
+  currentWaypoints.forEach(w => { positions.push(w.position.x, w.position.y, w.position.z); });
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  previewLine.geometry.dispose();
+  previewLine.geometry = geom;
+}
+
+function updatePreviewLine() {
+  // Extend line to current mouse position (raycast)
+  if (!previewLine || currentWaypoints.length === 0) return;
+  const positions = [];
+  currentWaypoints.forEach(w => { positions.push(w.position.x, w.position.y, w.position.z); });
+  // Add current mouse 3D position
+  const mousePos = getMouseWorldPosition();
+  if (mousePos) { positions.push(mousePos.x, mousePos.y, mousePos.z); }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  previewLine.geometry.dispose();
+  previewLine.geometry = geom;
+}
+
+function getMouseWorldPosition() {
+  raycaster.setFromCamera(mouse, camera);
+  // Try hitting boxes first
+  const boxHits = raycaster.intersectObjects(actorMeshes, false);
+  if (boxHits.length > 0) return boxHits[0].point;
+  // Fallback: hit ground plane
+  if (groundPlane) {
+    const gpHits = raycaster.intersectObject(groundPlane);
+    if (gpHits.length > 0) return gpHits[0].point;
+  }
+  return null;
+}
+
+// ============================================================
+// Custom Path Rendering
+// ============================================================
+function renderCustomPath(pathData) {
+  if (pathData.waypoints.length < 2) return;
+  const group = new THREE.Group();
+  const points = pathData.waypoints.map(w => new THREE.Vector3(w.position[0], w.position[1], w.position[2]));
+  const color = new THREE.Color(pathData.color);
+
+  // Straight line segments between waypoints
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const len = dir.length();
+    if (len < 0.01) continue;
+    dir.normalize();
+
+    // Tube as cylinder between two points
+    const tubeGeom = new THREE.CylinderGeometry(4, 4, len, 6);
+    tubeGeom.translate(0, len / 2, 0);
+    tubeGeom.rotateX(Math.PI / 2);
+    const tubeMesh = new THREE.Mesh(tubeGeom, new THREE.MeshBasicMaterial({ color }));
+    tubeMesh.position.copy(a);
+    tubeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+    group.add(tubeMesh);
+
+    // Arrow at midpoint
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(10, 25, 4),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    cone.position.copy(mid);
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    group.add(cone);
+  }
+
+  // Waypoint dots
+  points.forEach(p => {
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(6, 8, 8),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    dot.position.copy(p);
+    group.add(dot);
+  });
+
+  pathData.group = group;
+  scene.add(group);
+}
+
+function renderAllCustomPaths() {
+  customPaths.forEach(p => {
+    if (p.group) scene.remove(p.group);
+    renderCustomPath(p);
+  });
+  updatePathList();
+}
+
+function deleteCustomPath(id) {
+  const idx = customPaths.findIndex(p => p.id === id);
+  if (idx === -1) return;
+  const path = customPaths[idx];
+  if (path.group) scene.remove(path.group);
+  customPaths.splice(idx, 1);
+  saveCustomPaths();
+  updatePathList();
+}
+
+function toggleCustomPath(id) {
+  const path = customPaths.find(p => p.id === id);
+  if (!path || !path.group) return;
+  path.group.visible = !path.group.visible;
+}
+
+// ============================================================
+// Path List UI
+// ============================================================
+function updatePathList() {
+  const container = document.getElementById('path-list');
+  if (customPaths.length === 0) {
+    container.innerHTML = '<span style="color:var(--text-muted);font-size:11px;">No paths yet</span>';
+    return;
+  }
+  container.innerHTML = '';
+  customPaths.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'path-item';
+    item.innerHTML = `
+      <div class="path-item-color" style="background:${p.color};"></div>
+      <div class="path-item-name">${p.name}</div>
+      <div class="path-item-pts">${p.waypoints.length}pts</div>
+      <button class="path-item-btn" data-action="toggle" data-id="${p.id}" title="Toggle visibility">&#9673;</button>
+      <button class="path-item-btn delete" data-action="delete" data-id="${p.id}" title="Delete path">&times;</button>
+    `;
+    container.appendChild(item);
+  });
+  // Bind events
+  container.querySelectorAll('[data-action="toggle"]').forEach(btn => {
+    btn.onclick = () => toggleCustomPath(Number(btn.dataset.id));
+  });
+  container.querySelectorAll('[data-action="delete"]').forEach(btn => {
+    btn.onclick = () => deleteCustomPath(Number(btn.dataset.id));
+  });
+}
+
+// ============================================================
+// Path Persistence
+// ============================================================
+function getPathsStorageKey() { return `levelmap_paths_${levelData ? levelData.levelName : 'default'}`; }
+
+function saveCustomPaths() {
+  const serializable = customPaths.map(p => ({ id: p.id, name: p.name, color: p.color, waypoints: p.waypoints }));
+  try { localStorage.setItem(getPathsStorageKey(), JSON.stringify(serializable)); } catch {}
+}
+
+function loadCustomPaths() {
+  try {
+    const raw = localStorage.getItem(getPathsStorageKey());
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    parsed.forEach(p => {
+      p.group = null;
+      customPaths.push(p);
+      if (p.id >= pathIdCounter) pathIdCounter = p.id + 1;
+    });
+  } catch {}
+}
+
+function exportPaths() {
+  const data = customPaths.map(p => ({ name: p.name, color: p.color, waypoints: p.waypoints }));
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `paths_${levelData ? levelData.levelName : 'level'}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+function importPaths(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const imported = JSON.parse(e.target.result);
+      if (!Array.isArray(imported)) { alert('Invalid paths JSON'); return; }
+      imported.forEach(p => {
+        const pathData = { id: pathIdCounter++, name: p.name || 'Imported', color: p.color || '#e8854a', waypoints: p.waypoints, group: null };
+        customPaths.push(pathData);
+        renderCustomPath(pathData);
+      });
+      saveCustomPaths();
+      updatePathList();
+    } catch (err) { alert('Failed to parse: ' + err.message); }
+  };
+  reader.readAsText(file);
+}
+
+// ============================================================
+// Floor Controls
+// ============================================================
+function setupFloorControls() {
+  const container = document.getElementById('floor-controls');
+  container.innerHTML = '';
+  const allBtn = document.createElement('button');
+  allBtn.className = 'floor-btn active';
+  allBtn.innerHTML = `<div class="floor-color-dot" style="background:var(--text-secondary);"></div><span class="floor-btn-label">All Floors</span><span class="floor-btn-count">${levelData.actors.length}</span>`;
+  allBtn.onclick = () => setFloor('all');
+  container.appendChild(allBtn);
+
+  levelData.floors.forEach(fi => {
+    const count = levelData.actors.filter(a => a.floor === fi).length;
+    const c = FLOOR_COLOR_CSS[fi % FLOOR_COLOR_CSS.length];
+    const btn = document.createElement('button');
+    btn.className = 'floor-btn'; btn.dataset.floor = fi;
+    btn.innerHTML = `<div class="floor-color-dot" style="background:${c};"></div><span class="floor-btn-label">Floor ${fi}</span><span class="floor-btn-count">${count}</span>`;
+    btn.onclick = () => setFloor(fi);
+    container.appendChild(btn);
+  });
+}
+
+function setFloor(floor) {
+  activeFloor = floor;
+  document.querySelectorAll('.floor-btn').forEach(btn => {
+    if (floor === 'all') {
+      btn.classList.toggle('active', !btn.dataset.floor);
+    } else {
+      btn.classList.toggle('active', btn.dataset.floor == floor);
+    }
+  });
+  const allBtn = document.querySelector('.floor-btn:not([data-floor])');
+  if (allBtn) allBtn.classList.toggle('active', floor === 'all');
+
+  levelData.floors.forEach(fi => {
+    const group = floorGroups[fi];
+    const decoGroup = decorationGroups[fi];
+    const floorVisible = (floor === 'all' || fi === floor);
+    if (group) group.visible = floorVisible;
+    // Floor priority > decoration: decoration only visible when floor is visible AND decoration is on
+    if (decoGroup) decoGroup.visible = floorVisible && showDecoration;
+  });
+}
+
+function toggleDecoration() {
+  showDecoration = !showDecoration;
+  const btn = document.getElementById('btn-deco-toggle');
+  if (btn) btn.classList.toggle('active', showDecoration);
+
+  levelData.floors.forEach(fi => {
+    const decoGroup = decorationGroups[fi];
+    const floorVisible = (activeFloor === 'all' || fi === activeFloor);
+    if (decoGroup) decoGroup.visible = floorVisible && showDecoration;
+  });
+}
+
+// ============================================================
+// Legend
+// ============================================================
+function setupLegend() {
+  const container = document.getElementById('legend');
+  container.innerHTML = '';
+  levelData.floors.forEach(fi => {
+    const c = FLOOR_COLOR_CSS[fi % FLOOR_COLOR_CSS.length];
+    const el = document.createElement('div');
+    el.className = 'legend-item';
+    el.innerHTML = `<div class="legend-swatch" style="background:${c};"></div><span>Floor ${fi}</span>`;
+    container.appendChild(el);
+  });
+  // Decoration layer entry
+  const decoEl = document.createElement('div');
+  decoEl.className = 'legend-item';
+  decoEl.innerHTML = `<div class="legend-swatch" style="background:${DECO_COLOR_CSS};"></div><span>Decoration</span>`;
+  container.appendChild(decoEl);
+}
+
+// ============================================================
+// Labels System
+// ============================================================
+function getStorageKey() { return `levelmap_labels_${levelData ? levelData.levelName : 'default'}`; }
+function getOffsetsStorageKey() { return `levelmap_labelpos_${levelData ? levelData.levelName : 'default'}`; }
+function loadLabels() {
+  try { const r = localStorage.getItem(getStorageKey()); labelsStore = r ? JSON.parse(r) : {}; } catch { labelsStore = {}; }
+  try { const r = localStorage.getItem(getOffsetsStorageKey()); labelOffsetsStore = r ? JSON.parse(r) : {}; } catch { labelOffsetsStore = {}; }
+}
+function saveLabels() {
+  try { localStorage.setItem(getStorageKey(), JSON.stringify(labelsStore)); } catch {}
+  try { localStorage.setItem(getOffsetsStorageKey(), JSON.stringify(labelOffsetsStore)); } catch {}
+}
+
+function applyLabels() {
+  Object.values(labelObjects).forEach(o => { if (o.parent) o.parent.remove(o); });
+  Object.keys(labelObjects).forEach(k => delete labelObjects[k]);
+  actorMeshes.forEach(mesh => {
+    const text = labelsStore[mesh.userData.actorName];
+    if (text) createLabel(mesh, text);
+  });
+}
+
+function getDefaultLabelPos(actor) {
+  const sz = actor ? (actor.actualSize || actor.boxSize) : null;
+  return [sz ? sz.x / 2 : 0, sz ? sz.z + 25 : 50, sz ? sz.y / 2 : 0];
+}
+
+function createLabel(mesh, text) {
+  const name = mesh.userData.actorName;
+  if (labelObjects[name] && labelObjects[name].parent) labelObjects[name].parent.remove(labelObjects[name]);
+  const div = document.createElement('div');
+  div.className = 'area-label'; div.textContent = text;
+  div.dataset.actorName = name;
+  const labelObj = new CSS2DObject(div);
+  const actor = actorDataMap.get(mesh.uuid);
+
+  // Use saved offset or default position
+  const saved = labelOffsetsStore[name];
+  if (saved) {
+    labelObj.position.set(saved[0], saved[1], saved[2]);
+  } else {
+    const def = getDefaultLabelPos(actor);
+    labelObj.position.set(def[0], def[1], def[2]);
+  }
+
+  mesh.add(labelObj);
+  labelObjects[name] = labelObj;
+
+  // Drag handlers on the label DOM element
+  div.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    draggingLabel = { actorName: name, mesh, labelObj, startX: e.clientX, startY: e.clientY, moved: false };
+    controls.enabled = false;  // disable orbit during drag
+  });
+  // Double-click on label opens editor (since label captures events before the viewport)
+  div.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    openLabelEditor(name);
+  });
+}
+
+function getLabelBounds(mesh) {
+  // Compute the bounding range for label position in mesh local space
+  const actor = actorDataMap.get(mesh.uuid);
+  if (!actor) return null;
+  const sz = actor.actualSize || actor.boxSize;
+  if (!sz) return null;
+  const shapeType = actor.shapeType || 'box';
+  const props = actor.shapeProperties || {};
+
+  // After ueSize: w=X, h=Z, d=Y. Local coords: x=[0..w], y=[0..h], z=[0..d]
+  // For cylinder/stairs with useScale, geometry is pre-scale; bounds need care.
+  // Simplify: use the world-apparent size.
+  let w, h, d;
+  if (shapeType === 'cylinder' && props.cylinderRadius != null) {
+    const s = actor.scale || {x:1,y:1,z:1};
+    const r = props.cylinderRadius;
+    const ch = props.cylinderHeight || 100;
+    // In local geom space (before scale), pivot at bottom center
+    // After mesh.scale = (sx, sz, sy), effective: radius*sx, height*sz, radius*sy
+    // Label is in mesh local space (pre-scale), clamp to geom bounds
+    return { minX: -r, maxX: r, minY: 0, maxY: ch, minZ: -r, maxZ: r };
+  }
+  if (shapeType === 'stairs' && props.stairsSize) {
+    // Geom in local space: x=[0..sx], y=[0..sz], z=[0..sy]
+    return { minX: 0, maxX: props.stairsSize.x, minY: 0, maxY: props.stairsSize.z, minZ: 0, maxZ: props.stairsSize.y };
+  }
+  // Box: corner pivot, dim from ueSize: w=X, h=Z, d=Y
+  const dim = ueSize(sz.x, sz.y, sz.z);
+  return { minX: 0, maxX: dim.w, minY: 0, maxY: dim.h, minZ: 0, maxZ: dim.d };
+}
+
+function onLabelDragMove(event) {
+  if (!draggingLabel) return;
+  // Require a minimum drag distance before moving (avoids accidental drags on click)
+  if (!draggingLabel.moved) {
+    const dx = event.clientX - draggingLabel.startX;
+    const dy = event.clientY - draggingLabel.startY;
+    if (dx * dx + dy * dy < 16) return;
+    draggingLabel.moved = true;
+  }
+  const { mesh, labelObj, actorName } = draggingLabel;
+  const viewport = document.getElementById('viewport');
+  const rect = viewport.getBoundingClientRect();
+  const mx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const my = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  // Raycast against the parent mesh to get a surface point
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(new THREE.Vector2(mx, my), camera);
+  const hits = rc.intersectObject(mesh, false);
+
+  let localPt;
+  if (hits.length > 0) {
+    // Convert world hit to mesh local space, offset along normal
+    localPt = mesh.worldToLocal(hits[0].point.clone());
+    if (hits[0].face) {
+      const n = hits[0].face.normal.clone().normalize();
+      localPt.addScaledVector(n, 5);
+    }
+  } else {
+    // No hit on mesh — project onto a plane at the label's current Y in world space
+    const worldPos = new THREE.Vector3();
+    labelObj.getWorldPosition(worldPos);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos.y);
+    const intersection = new THREE.Vector3();
+    if (!rc.ray.intersectPlane(plane, intersection)) return;
+    localPt = mesh.worldToLocal(intersection);
+  }
+
+  // Clamp to box bounds
+  const bounds = getLabelBounds(mesh);
+  if (bounds) {
+    localPt.x = Math.max(bounds.minX, Math.min(bounds.maxX, localPt.x));
+    localPt.y = Math.max(bounds.minY, Math.min(bounds.maxY, localPt.y));
+    localPt.z = Math.max(bounds.minZ, Math.min(bounds.maxZ, localPt.z));
+  }
+
+  labelObj.position.copy(localPt);
+}
+
+function onLabelDragEnd(event) {
+  if (!draggingLabel) return;
+  if (draggingLabel.moved) {
+    const { actorName, labelObj } = draggingLabel;
+    // Save the new position
+    labelOffsetsStore[actorName] = [
+      Math.round(labelObj.position.x * 100) / 100,
+      Math.round(labelObj.position.y * 100) / 100,
+      Math.round(labelObj.position.z * 100) / 100
+    ];
+    saveLabels();
+  }
+  draggingLabel = null;
+  controls.enabled = true;
+}
+
+// ============================================================
+// Interaction
+// ============================================================
+function onPointerMove(event) {
+  const viewport = document.getElementById('viewport');
+  const rect = viewport.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  if (isDrawing) return; // preview line handled in animate()
+
+  raycaster.setFromCamera(mouse, camera);
+  const visibleMeshes = actorMeshes.filter(m => { let p = m.parent; while (p) { if (!p.visible) return false; p = p.parent; } return true; });
+  const intersects = raycaster.intersectObjects(visibleMeshes, false);
+  const tooltip = document.getElementById('tooltip');
+
+  if (hoveredMesh && hoveredMesh !== selectedMesh) restoreMeshAppearance(hoveredMesh);
+
+  if (intersects.length > 0) {
+    const mesh = intersects[0].object;
+    hoveredMesh = mesh;
+    if (mesh !== selectedMesh) {
+      mesh.material.emissive = new THREE.Color(0x333344);
+      mesh.material.emissiveIntensity = 0.4;
+    }
+    const actor = actorDataMap.get(mesh.uuid);
+    if (actor) {
+      tooltip.textContent = labelsStore[actor.name] ? `${labelsStore[actor.name]} (${actor.name})` : actor.name;
+      tooltip.style.left = (event.clientX + 14) + 'px';
+      tooltip.style.top = (event.clientY + 14) + 'px';
+      tooltip.classList.add('visible');
+    }
+    viewport.style.cursor = 'pointer';
+  } else {
+    hoveredMesh = null;
+    tooltip.classList.remove('visible');
+    viewport.style.cursor = isDrawing ? 'crosshair' : 'default';
+  }
+}
+
+function onPointerDown(event) {
+  if (event.button !== 0) return;
+  const viewport = document.getElementById('viewport');
+  const rect = viewport.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  // Path drawing mode
+  if (isDrawing) {
+    raycaster.setFromCamera(mouse, camera);
+    // Try boxes first
+    const visibleMeshes = actorMeshes.filter(m => { let p = m.parent; while (p) { if (!p.visible) return false; p = p.parent; } return true; });
+    const boxHits = raycaster.intersectObjects(visibleMeshes, false);
+    if (boxHits.length > 0) {
+      const hit = boxHits[0];
+      const mesh = hit.object;
+      const actor = actorDataMap.get(mesh.uuid);
+      // Offset slightly along face normal so path floats above the surface
+      const pt = hit.point.clone();
+      if (hit.face && hit.face.normal) {
+        const worldNormal = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
+        pt.addScaledVector(worldNormal, 5);
+      }
+      addWaypoint(pt, actor ? actor.name : null);
+      return;
+    }
+    // Try ground plane
+    if (groundPlane) {
+      const gpHits = raycaster.intersectObject(groundPlane);
+      if (gpHits.length > 0) {
+        addWaypoint(gpHits[0].point, null);
+        return;
+      }
+    }
+    return;
+  }
+
+  // Normal selection mode
+  raycaster.setFromCamera(mouse, camera);
+  const visibleMeshes = actorMeshes.filter(m => { let p = m.parent; while (p) { if (!p.visible) return false; p = p.parent; } return true; });
+  const intersects = raycaster.intersectObjects(visibleMeshes, false);
+
+  if (selectedMesh) { restoreMeshAppearance(selectedMesh); selectedMesh = null; }
+
+  if (intersects.length > 0) {
+    const mesh = intersects[0].object;
+    selectedMesh = mesh;
+    mesh.material.emissive = new THREE.Color(HIGHLIGHT_COLOR);
+    mesh.material.emissiveIntensity = 0.3;
+    const actor = actorDataMap.get(mesh.uuid);
+    if (actor) updateInfoPanel(actor);
+  } else {
+    clearInfoPanel();
+  }
+}
+
+function onDblClick() {
+  if (isDrawing) return;
+  if (!selectedMesh) return;
+  const actor = actorDataMap.get(selectedMesh.uuid);
+  if (actor) openLabelEditor(actor.name);
+}
+
+function onContextMenu(event) {
+  event.preventDefault();
+  if (isDrawing) {
+    undoWaypoint();
+  }
+}
+
+function restoreMeshAppearance(mesh) {
+  mesh.material.emissive = new THREE.Color(0x000000);
+  mesh.material.emissiveIntensity = 0;
+}
+
+function updateInfoPanel(actor) {
+  const panel = document.getElementById('info-panel');
+  const sz = actor.actualSize || actor.boxSize || { x: '?', y: '?', z: '?' };
+  const shapeType = actor.shapeType || 'box';
+  const decoLabel = actor.isDecoration ? ' (deco)' : '';
+  panel.innerHTML = `
+    <div><span class="info-label">Name: </span><span class="info-value">${actor.name}</span></div>
+    <div><span class="info-label">Type: </span><span class="info-value">${shapeType}${decoLabel}</span></div>
+    <div><span class="info-label">Floor: </span><span class="info-value">${actor.floor}</span></div>
+    <div><span class="info-label">Pos: </span><span class="info-value">${actor.location.x}, ${actor.location.y}, ${actor.location.z}</span></div>
+    <div><span class="info-label">Size: </span><span class="info-value">${sz.x} x ${sz.y} x ${sz.z}</span></div>
+    <div><span class="info-label">Label: </span><span class="info-value">${labelsStore[actor.name] || '—'}</span></div>
+    <div style="margin-top:6px;"><span style="color:var(--text-muted);font-size:10px;">Double-click to edit label</span></div>`;
+}
+
+function clearInfoPanel() {
+  document.getElementById('info-panel').innerHTML = '<span style="color:var(--text-muted);">Click a box to inspect</span>';
+}
+
+// ============================================================
+// Label Editor Modal
+// ============================================================
+let editingActorName = null;
+function openLabelEditor(actorName) {
+  editingActorName = actorName;
+  document.getElementById('modal-actor-name').textContent = actorName;
+  document.getElementById('label-input').value = labelsStore[actorName] || '';
+  document.getElementById('label-modal').classList.add('active');
+  setTimeout(() => document.getElementById('label-input').focus(), 50);
+}
+function closeLabelEditor() { document.getElementById('label-modal').classList.remove('active'); editingActorName = null; }
+function saveLabelFromEditor() {
+  if (!editingActorName) return;
+  const val = document.getElementById('label-input').value.trim();
+  if (val) {
+    labelsStore[editingActorName] = val;
+  } else {
+    delete labelsStore[editingActorName];
+    delete labelOffsetsStore[editingActorName];
+  }
+  saveLabels(); applyLabels();
+  if (selectedMesh) { const a = actorDataMap.get(selectedMesh.uuid); if (a) updateInfoPanel(a); }
+  closeLabelEditor();
+}
+function deleteLabelFromEditor() {
+  if (!editingActorName) return;
+  delete labelsStore[editingActorName];
+  delete labelOffsetsStore[editingActorName];
+  saveLabels(); applyLabels();
+  if (selectedMesh) { const a = actorDataMap.get(selectedMesh.uuid); if (a) updateInfoPanel(a); }
+  closeLabelEditor();
+}
+
+// ============================================================
+// Camera Presets
+// ============================================================
+function resetCamera() {
+  if (!levelData || !levelData.actors.length) return;
+  let cx = 0, cy = 0, cz = 0;
+  levelData.actors.forEach(a => { cx += a.location.x; cy += a.location.y; cz += a.location.z; });
+  cx /= levelData.actors.length; cy /= levelData.actors.length; cz /= levelData.actors.length;
+  const center = uePos(cx, cy, cz); const span = estimateSpan();
+  controls.target.copy(center);
+  camera.position.set(center.x + span * 0.8, center.y + span * 0.9, center.z + span * 0.8);
+  controls.update();
+}
+function topView() {
+  if (!levelData || !levelData.actors.length) return;
+  let cx = 0, cy = 0, cz = 0;
+  levelData.actors.forEach(a => { cx += a.location.x; cy += a.location.y; cz += a.location.z; });
+  cx /= levelData.actors.length; cy /= levelData.actors.length; cz /= levelData.actors.length;
+  const center = uePos(cx, cy, cz); const span = estimateSpan();
+  controls.target.copy(center);
+  camera.position.set(center.x, center.y + span * 1.5, center.z + 1);
+  controls.update();
+}
+function frontView() {
+  if (!levelData || !levelData.actors.length) return;
+  let cx = 0, cy = 0, cz = 0;
+  levelData.actors.forEach(a => { cx += a.location.x; cy += a.location.y; cz += a.location.z; });
+  cx /= levelData.actors.length; cy /= levelData.actors.length; cz /= levelData.actors.length;
+  const center = uePos(cx, cy, cz); const span = estimateSpan();
+  controls.target.copy(center);
+  camera.position.set(center.x, center.y + span * 0.3, center.z + span * 1.5);
+  controls.update();
+}
+function estimateSpan() {
+  if (!levelData || !levelData.actors.length) return 2000;
+  let mnX = Infinity, mxX = -Infinity, mnY = Infinity, mxY = -Infinity;
+  levelData.actors.forEach(a => { mnX = Math.min(mnX, a.location.x); mxX = Math.max(mxX, a.location.x); mnY = Math.min(mnY, a.location.y); mxY = Math.max(mxY, a.location.y); });
+  return Math.max(mxX - mnX, mxY - mnY, 1000);
+}
+
+// ============================================================
+// Data Loading
+// ============================================================
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.actors || !Array.isArray(data.actors)) { alert('Invalid JSON'); return; }
+      levelData = data;
+      onDataLoaded(data);
+    } catch (err) { alert('Failed to parse JSON: ' + err.message); }
+  };
+  reader.readAsText(file);
+}
+
+function onDataLoaded(data) {
+  document.getElementById('welcome').classList.add('hidden');
+  document.getElementById('app').classList.add('active');
+  if (!renderer) { initScene(); animate(); }
+  setTimeout(() => {
+    buildScene(data);
+    setupFloorControls();
+    setupLegend();
+    updatePathList();
+    document.getElementById('level-name').textContent = data.levelName || 'Level';
+    const mainCount = data.actors.filter(a => !a.isDecoration).length;
+    const decoCount = data.actors.filter(a => a.isDecoration).length;
+    document.getElementById('stat-actors').innerHTML = `<span>${mainCount}</span> main + <span>${decoCount}</span> deco`;
+    document.getElementById('stat-floors').innerHTML = `<span>${data.floors.length}</span> floors`;
+    onResize();
+  }, 100);
+}
+
+// ============================================================
+// Label / Path Export-Import
+// ============================================================
+function exportLabels() {
+  const data = { labels: labelsStore, offsets: labelOffsetsStore };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `labels_${levelData ? levelData.levelName : 'level'}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+}
+function importLabels(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      // Support both old format (flat { name: text }) and new format ({ labels, offsets })
+      if (parsed.labels && typeof parsed.labels === 'object') {
+        Object.assign(labelsStore, parsed.labels);
+        if (parsed.offsets) Object.assign(labelOffsetsStore, parsed.offsets);
+      } else {
+        Object.assign(labelsStore, parsed);
+      }
+      saveLabels(); applyLabels();
+    } catch (err) { alert('Error: ' + err.message); }
+  };
+  reader.readAsText(file);
+}
+
+// ============================================================
+// Share: Export self-contained HTML
+// ============================================================
+function exportShareHTML() {
+  if (!levelData) { alert('No level data loaded'); return; }
+
+  // Extract CSS from the <style> element (original, unmodified)
+  const styleEl = document.querySelector('style');
+  const cssText = styleEl ? styleEl.textContent : '';
+
+  // Extract JS from the inline <script type="module"> (original source)
+  const moduleEl = document.querySelector('script[type="module"]');
+  const jsText = moduleEl ? moduleEl.textContent : '';
+
+  // Extract importmap
+  const importmapEl = document.querySelector('script[type="importmap"]');
+  const importmapJSON = importmapEl ? importmapEl.textContent : '{}';
+
+  // Build embedded data (level + labels + paths)
+  const embedData = JSON.stringify({
+    level: levelData,
+    labels: labelsStore,
+    labelOffsets: labelOffsetsStore,
+    paths: customPaths.map(p => ({ name: p.name, color: p.color, waypoints: p.waypoints }))
+  });
+
+  // Assemble clean HTML from individual reliable pieces:
+  // - _bodySnapshot: captured at load time before Three.js modified the DOM
+  // - CSS/JS/importmap: extracted from the original <style>/<script> elements
+  const html = '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n'
+    + '<meta charset="UTF-8">\n'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+    + '<title>' + (levelData.levelName || 'Level') + ' - Map Viewer</title>\n'
+    + '<link rel="preconnect" href="https://fonts.googleapis.com">\n'
+    + '<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">\n'
+    + '<style>\n' + cssText + '\n#welcome{display:none!important}#app{display:grid!important}\n</style>\n'
+    + '<script type="importmap">\n' + importmapJSON + '\n<' + '/script>\n'
+    + '</head>\n<body>\n'
+    + _bodySnapshot + '\n'
+    + '<script id="embed-data" type="application/json">' + embedData + '<' + '/script>\n'
+    + '<script type="module">\n' + jsText + '\n<' + '/script>\n'
+    + '</body>\n</html>';
+
+  // Download
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (levelData.levelName || 'level') + '_map.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ============================================================
+// Event Bindings
+// ============================================================
+function bindEvents() {
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+  // Welcome screen elements only exist in the editor, not in shared exports
+  if (dropZone && fileInput) {
+    document.getElementById('btn-browse').onclick = () => fileInput.click();
+    fileInput.onchange = (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); };
+    ['dragenter','dragover'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('drag-over'); }));
+    ['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('drag-over'); }));
+    dropZone.addEventListener('drop', e => { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    document.body.addEventListener('dragover', e => e.preventDefault());
+    document.body.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f && f.name.endsWith('.json')) handleFile(f); });
+  }
+
+  document.getElementById('btn-reset').onclick = resetCamera;
+  document.getElementById('btn-top').onclick = topView;
+  document.getElementById('btn-front').onclick = frontView;
+  document.getElementById('btn-deco-toggle').onclick = toggleDecoration;
+  const reloadBtn = document.getElementById('btn-reload');
+  if (reloadBtn && fileInput) reloadBtn.onclick = () => fileInput.click();
+  document.getElementById('btn-share').onclick = exportShareHTML;
+  document.getElementById('btn-export-labels').onclick = exportLabels;
+  document.getElementById('btn-import-labels').onclick = () => document.getElementById('label-file-input').click();
+  document.getElementById('label-file-input').onchange = (e) => { if (e.target.files[0]) importLabels(e.target.files[0]); };
+  document.getElementById('cam-speed-slider').oninput = (e) => {
+    cameraSpeed = parseFloat(e.target.value);
+    document.getElementById('cam-speed-val').textContent = cameraSpeed.toFixed(2);
+  };
+
+  // Path drawing
+  document.getElementById('btn-start-draw').onclick = startDrawing;
+  document.getElementById('btn-finish-draw').onclick = finishDrawing;
+  document.getElementById('btn-cancel-draw').onclick = cancelDrawing;
+  document.getElementById('btn-undo-point').onclick = undoWaypoint;
+  document.getElementById('btn-export-paths').onclick = exportPaths;
+  document.getElementById('btn-import-paths').onclick = () => document.getElementById('path-file-input').click();
+  document.getElementById('path-file-input').onchange = (e) => { if (e.target.files[0]) importPaths(e.target.files[0]); };
+
+  // Viewport interaction
+  const viewport = document.getElementById('viewport');
+  viewport.addEventListener('pointermove', onPointerMove);
+  viewport.addEventListener('pointerdown', onPointerDown);
+  viewport.addEventListener('dblclick', onDblClick);
+  viewport.addEventListener('contextmenu', onContextMenu);
+
+  // Label drag (move/end are global so dragging works even when pointer leaves the label)
+  window.addEventListener('pointermove', onLabelDragMove);
+  window.addEventListener('pointerup', onLabelDragEnd);
+
+  // First-person look: right mouse drag rotates camera around its own position
+  viewport.addEventListener('pointerdown', e => {
+    if (e.button === 2 && !isDrawing) {
+      fpLookActive = true;
+      fpPrevX = e.clientX;
+      fpPrevY = e.clientY;
+    }
+  });
+  window.addEventListener('pointermove', e => {
+    if (!fpLookActive) return;
+    const dx = e.clientX - fpPrevX;
+    const dy = e.clientY - fpPrevY;
+    fpPrevX = e.clientX;
+    fpPrevY = e.clientY;
+
+    const sensitivity = 0.003;
+
+    // Vector from camera to orbit target
+    const offset = controls.target.clone().sub(camera.position);
+
+    // Yaw: rotate around world Y axis
+    offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), -dx * sensitivity);
+
+    // Pitch: rotate around camera's local right axis
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    offset.applyAxisAngle(right, -dy * sensitivity);
+
+    // Move target, keep camera position fixed
+    controls.target.copy(camera.position).add(offset);
+  });
+  window.addEventListener('pointerup', e => {
+    if (e.button === 2) fpLookActive = false;
+  });
+
+  // Keyboard: WASD fly camera + drawing shortcuts
+  document.addEventListener('keydown', e => {
+    // Don't capture when typing in inputs
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+    const key = e.key.toLowerCase();
+    keysPressed[key] = true;
+    if (e.shiftKey) keysPressed['shift'] = true;
+
+    // Drawing shortcuts
+    if (isDrawing) {
+      if (e.key === 'Escape') cancelDrawing();
+      if (e.key === 'Enter') finishDrawing();
+      if (key === 'z' && (e.ctrlKey || e.metaKey)) undoWaypoint();
+    }
+  });
+  document.addEventListener('keyup', e => {
+    const key = e.key.toLowerCase();
+    keysPressed[key] = false;
+    if (!e.shiftKey) keysPressed['shift'] = false;
+  });
+  // Clear keys on window blur (prevent stuck keys when tabbing away)
+  window.addEventListener('blur', () => {
+    Object.keys(keysPressed).forEach(k => keysPressed[k] = false);
+  });
+
+  // Label modal
+  document.getElementById('btn-save-label').onclick = saveLabelFromEditor;
+  document.getElementById('btn-del-label').onclick = deleteLabelFromEditor;
+  document.getElementById('btn-cancel-label').onclick = closeLabelEditor;
+  document.getElementById('label-input').addEventListener('keydown', e => { if (e.key === 'Enter') saveLabelFromEditor(); if (e.key === 'Escape') closeLabelEditor(); });
+  document.getElementById('label-modal').addEventListener('click', e => { if (e.target === document.getElementById('label-modal')) closeLabelEditor(); });
+}
+
+// ============================================================
+// Startup: detect embedded data (shared HTML) or normal mode
+// ============================================================
+const _embedEl = document.getElementById('embed-data');
+if (_embedEl) {
+  // Shared mode: auto-load embedded level data + labels + paths
+  const _embed = JSON.parse(_embedEl.textContent);
+  levelData = _embed.level;
+  document.getElementById('app').classList.add('active');
+  bindEvents();
+  initScene(); animate();
+  setTimeout(() => {
+    buildScene(levelData);
+    Object.assign(labelsStore, _embed.labels || {});
+    Object.assign(labelOffsetsStore, _embed.labelOffsets || {});
+    saveLabels(); applyLabels();
+    (_embed.paths || []).forEach(p => {
+      const pd = { id: pathIdCounter++, name: p.name, color: p.color, waypoints: p.waypoints, group: null };
+      customPaths.push(pd);
+      renderCustomPath(pd);
+    });
+    saveCustomPaths(); setupFloorControls(); setupLegend(); updatePathList();
+    document.getElementById('level-name').textContent = levelData.levelName || 'Level';
+    const mc = levelData.actors.filter(a => !a.isDecoration).length;
+    const dc = levelData.actors.filter(a => a.isDecoration).length;
+    document.getElementById('stat-actors').innerHTML = '<span>' + mc + '</span> main + <span>' + dc + '</span> deco';
+    document.getElementById('stat-floors').innerHTML = '<span>' + levelData.floors.length + '</span> floors';
+    onResize();
+  }, 100);
+} else {
+  // Normal editor mode
+  bindEvents();
+}
+</script>
+</body>
+</html>
