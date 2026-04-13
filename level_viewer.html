@@ -238,6 +238,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
     </div>
 
     <div class="sidebar-section">
+      <div class="section-title">Auto Path</div>
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">
+        Requires UE tags: <code>ground</code>, <code>pathstart</code>, <code>pathend</code>, <code>pathbranch</code>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <label style="font-size:11px;white-space:nowrap;">Cell size</label>
+        <input type="range" id="auto-cell-size" min="20" max="200" value="50" style="flex:1;">
+        <span id="auto-cell-val" style="font-size:11px;min-width:28px;">50</span>
+      </div>
+      <button class="btn" id="btn-auto-path" style="width:100%;justify-content:center;">Generate Auto Path</button>
+    </div>
+
+    <div class="sidebar-section">
       <div class="section-title">Paths</div>
       <div id="path-list"><span style="color:var(--text-muted);font-size:11px;">No paths yet</span></div>
       <div style="margin-top:8px;display:flex;gap:6px;">
@@ -858,6 +871,259 @@ function getMouseWorldPosition() {
     if (gpHits.length > 0) return gpHits[0].point;
   }
   return null;
+}
+
+// ============================================================
+// Auto Pathfinding
+// ============================================================
+
+function getActorWorldBoundsXZ(actor) {
+  const pos = uePos(actor.location.x, actor.location.y, actor.location.z);
+  const size = actor.actualSize || actor.boxSize;
+  if (!size) return null;
+  const dim = ueSize(size.x, size.y, size.z);
+  return {
+    minX: pos.x, maxX: pos.x + dim.w,
+    minZ: pos.z, maxZ: pos.z + dim.d,
+    minY: pos.y, maxY: pos.y + dim.h,
+    centerX: pos.x + dim.w / 2,
+    centerZ: pos.z + dim.d / 2,
+    topY: pos.y + dim.h
+  };
+}
+
+function rasterizeGround(groundActors, cellSize) {
+  let gMinX = Infinity, gMaxX = -Infinity, gMinZ = Infinity, gMaxZ = -Infinity;
+  const boundsArr = [];
+  for (const actor of groundActors) {
+    const b = getActorWorldBoundsXZ(actor);
+    if (!b) continue;
+    boundsArr.push(b);
+    gMinX = Math.min(gMinX, b.minX); gMaxX = Math.max(gMaxX, b.maxX);
+    gMinZ = Math.min(gMinZ, b.minZ); gMaxZ = Math.max(gMaxZ, b.maxZ);
+  }
+  if (boundsArr.length === 0) return null;
+
+  const margin = cellSize * 2;
+  gMinX -= margin; gMaxX += margin; gMinZ -= margin; gMaxZ += margin;
+  const cols = Math.ceil((gMaxX - gMinX) / cellSize);
+  const rows = Math.ceil((gMaxZ - gMinZ) / cellSize);
+
+  // Limit grid size to prevent memory issues
+  if (cols * rows > 4000000) {
+    alert('Grid too large (' + cols + 'x' + rows + '). Increase cell size.');
+    return null;
+  }
+
+  const grid = [];
+  for (let r = 0; r < rows; r++) grid.push(new Uint8Array(cols));
+
+  for (const b of boundsArr) {
+    const c0 = Math.max(0, Math.floor((b.minX - gMinX) / cellSize));
+    const c1 = Math.min(cols - 1, Math.floor((b.maxX - gMinX) / cellSize));
+    const r0 = Math.max(0, Math.floor((b.minZ - gMinZ) / cellSize));
+    const r1 = Math.min(rows - 1, Math.floor((b.maxZ - gMinZ) / cellSize));
+    for (let r = r0; r <= r1; r++)
+      for (let c = c0; c <= c1; c++)
+        grid[r][c] = 1;
+  }
+
+  return { grid, originX: gMinX, originZ: gMinZ, cols, rows, cellSize };
+}
+
+function markObstacles(gridData, obstacleActors, groundTopY, groundAvgH) {
+  const threshold = groundTopY + groundAvgH * 1.5;
+  for (const actor of obstacleActors) {
+    const b = getActorWorldBoundsXZ(actor);
+    if (!b) continue;
+    if (b.minY > threshold) continue; // floating — skip
+    const c0 = Math.max(0, Math.floor((b.minX - gridData.originX) / gridData.cellSize));
+    const c1 = Math.min(gridData.cols - 1, Math.floor((b.maxX - gridData.originX) / gridData.cellSize));
+    const r0 = Math.max(0, Math.floor((b.minZ - gridData.originZ) / gridData.cellSize));
+    const r1 = Math.min(gridData.rows - 1, Math.floor((b.maxZ - gridData.originZ) / gridData.cellSize));
+    for (let r = r0; r <= r1; r++)
+      for (let c = c0; c <= c1; c++)
+        gridData.grid[r][c] = 0;
+  }
+}
+
+function worldToGrid(wx, wz, gd) {
+  return { col: Math.floor((wx - gd.originX) / gd.cellSize), row: Math.floor((wz - gd.originZ) / gd.cellSize) };
+}
+function gridToWorld(col, row, gd) {
+  return { x: gd.originX + (col + 0.5) * gd.cellSize, z: gd.originZ + (row + 0.5) * gd.cellSize };
+}
+
+// --- A* on 2D grid (8-dir, binary heap) ---
+function _heapPush(h, v) {
+  h.push(v); let i = h.length - 1;
+  while (i > 0) { const p = (i - 1) >> 1; if (h[p][0] <= h[i][0]) break; [h[p], h[i]] = [h[i], h[p]]; i = p; }
+}
+function _heapPop(h) {
+  const top = h[0], last = h.pop();
+  if (h.length > 0) { h[0] = last; let i = 0; for (;;) { let s = i; const l = 2*i+1, r = 2*i+2;
+    if (l < h.length && h[l][0] < h[s][0]) s = l; if (r < h.length && h[r][0] < h[s][0]) s = r;
+    if (s === i) break; [h[i], h[s]] = [h[s], h[i]]; i = s; } }
+  return top;
+}
+
+function astarGrid(grid, sc, sr, ec, er, cols, rows) {
+  if (sc < 0 || sc >= cols || sr < 0 || sr >= rows) return null;
+  if (ec < 0 || ec >= cols || er < 0 || er >= rows) return null;
+  if (!grid[sr][sc] || !grid[er][ec]) return null;
+
+  const S2 = Math.SQRT2;
+  const dirs = [[-1,0,1],[1,0,1],[0,-1,1],[0,1,1],[-1,-1,S2],[1,-1,S2],[-1,1,S2],[1,1,S2]];
+  const total = rows * cols;
+  const gS = new Float32Array(total).fill(Infinity);
+  const from = new Int32Array(total).fill(-1);
+  const closed = new Uint8Array(total);
+  const idx = (r, c) => r * cols + c;
+  const si = idx(sr, sc), ei = idx(er, ec);
+  gS[si] = 0;
+
+  function h(c1, r1) { const dx = Math.abs(c1 - ec), dz = Math.abs(r1 - er); return Math.sqrt(dx*dx + dz*dz); }
+  const heap = [[h(sc, sr), si]];
+
+  while (heap.length > 0) {
+    const [, ci] = _heapPop(heap);
+    if (ci === ei) break;
+    if (closed[ci]) continue;
+    closed[ci] = 1;
+    const cr = (ci / cols) | 0, cc = ci % cols;
+
+    for (const [dr, dc, cost] of dirs) {
+      const nr = cr + dr, nc = cc + dc;
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+      if (!grid[nr][nc]) continue;
+      const ni = idx(nr, nc);
+      if (closed[ni]) continue;
+      if (dr !== 0 && dc !== 0 && (!grid[cr + dr][cc] || !grid[cr][cc + dc])) continue; // no corner-cutting
+      const tg = gS[ci] + cost;
+      if (tg < gS[ni]) { gS[ni] = tg; from[ni] = ci; _heapPush(heap, [tg + h(nc, nr), ni]); }
+    }
+  }
+
+  if (from[ei] === -1 && ei !== si) return null;
+  const path = [];
+  for (let c = ei; c !== -1; c = from[c]) path.push({ col: c % cols, row: (c / cols) | 0 });
+  path.reverse();
+  return path;
+}
+
+// --- Douglas-Peucker simplification ---
+function _ptLineDist(p, a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z, lenSq = dx*dx + dz*dz;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.z - a.z);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x)*dx + (p.z - a.z)*dz) / lenSq));
+  return Math.hypot(p.x - (a.x + t*dx), p.z - (a.z + t*dz));
+}
+function simplifyPath(pts, tol) {
+  if (pts.length <= 2) return pts;
+  let mx = 0, mi = 0;
+  for (let i = 1; i < pts.length - 1; i++) { const d = _ptLineDist(pts[i], pts[0], pts[pts.length-1]); if (d > mx) { mx = d; mi = i; } }
+  if (mx > tol) { const l = simplifyPath(pts.slice(0, mi+1), tol), r = simplifyPath(pts.slice(mi), tol); return l.slice(0,-1).concat(r); }
+  return [pts[0], pts[pts.length-1]];
+}
+
+// --- MST (Prim) ---
+function computeMST(nodes) {
+  if (nodes.length <= 1) return [];
+  const n = nodes.length, inM = new Uint8Array(n), minE = new Float32Array(n).fill(Infinity), minF = new Int32Array(n).fill(-1);
+  const edges = []; minE[0] = 0;
+  for (let iter = 0; iter < n; iter++) {
+    let u = -1;
+    for (let i = 0; i < n; i++) if (!inM[i] && (u === -1 || minE[i] < minE[u])) u = i;
+    inM[u] = 1;
+    if (minF[u] !== -1) edges.push([minF[u], u]);
+    for (let v = 0; v < n; v++) { if (inM[v]) continue;
+      const d = Math.hypot(nodes[u].x - nodes[v].x, nodes[u].z - nodes[v].z);
+      if (d < minE[v]) { minE[v] = d; minF[v] = u; } }
+  }
+  return edges;
+}
+
+// --- Snap to nearest walkable cell ---
+function snapToWalkable(row, col, grid, rows, cols, maxRadius) {
+  if (row >= 0 && row < rows && col >= 0 && col < cols && grid[row][col]) return { row, col };
+  for (let r = 1; r <= maxRadius; r++) {
+    for (let dr = -r; dr <= r; dr++) {
+      for (let dc = -r; dc <= r; dc++) {
+        if (Math.abs(dr) !== r && Math.abs(dc) !== r) continue;
+        const nr = row + dr, nc = col + dc;
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc]) return { row: nr, col: nc };
+      }
+    }
+  }
+  return null;
+}
+
+// --- Main entry ---
+function generateAutoPath(cellSize) {
+  if (!levelData) return;
+
+  const groundActors = [], keyNodes = [], nonGroundActors = [];
+  for (const actor of levelData.actors) {
+    const tags = (actor.tags || []).map(t => t.toLowerCase());
+    const isGround = tags.includes('ground');
+    if (isGround) groundActors.push(actor);
+    else nonGroundActors.push(actor);
+
+    const type = tags.includes('pathstart') ? 'start' : tags.includes('pathend') ? 'end' : tags.includes('pathbranch') ? 'branch' : null;
+    if (type) {
+      const b = getActorWorldBoundsXZ(actor);
+      if (b) keyNodes.push({ actor, type, x: b.centerX, z: b.centerZ, topY: b.topY });
+    }
+  }
+
+  if (groundActors.length === 0) { alert('No actors with "ground" tag found.\nTag ground blocks in UE with "ground".'); return; }
+  if (!keyNodes.some(n => n.type === 'start')) { alert('No actor with "pathstart" tag found.\nTag the start block in UE.'); return; }
+  if (!keyNodes.some(n => n.type === 'end')) { alert('No actor with "pathend" tag found.\nTag at least one end block in UE.'); return; }
+
+  const gridData = rasterizeGround(groundActors, cellSize);
+  if (!gridData) return;
+
+  // Ground surface stats
+  let totalTopY = 0, totalH = 0, gCnt = 0;
+  for (const a of groundActors) { const b = getActorWorldBoundsXZ(a); if (b) { totalTopY += b.topY; totalH += (b.maxY - b.minY); gCnt++; } }
+  const groundTopY = gCnt > 0 ? totalTopY / gCnt : 0;
+  const groundAvgH = gCnt > 0 ? totalH / gCnt : 100;
+
+  markObstacles(gridData, nonGroundActors, groundTopY, groundAvgH);
+
+  // Map key nodes to grid
+  const mstNodes = keyNodes.map((kn, i) => {
+    const g = worldToGrid(kn.x, kn.z, gridData);
+    const snapped = snapToWalkable(g.row, g.col, gridData.grid, gridData.rows, gridData.cols, 20);
+    return { id: i, x: kn.x, z: kn.z, col: snapped ? snapped.col : g.col, row: snapped ? snapped.row : g.row, type: kn.type, actor: kn.actor };
+  });
+
+  const mstEdges = computeMST(mstNodes);
+
+  const pathSurfaceY = groundTopY + 5;
+  const tolerance = cellSize * 1.5;
+  let generated = 0;
+
+  for (const [fi, ti] of mstEdges) {
+    const f = mstNodes[fi], t = mstNodes[ti];
+    const raw = astarGrid(gridData.grid, f.col, f.row, t.col, t.row, gridData.cols, gridData.rows);
+    if (!raw) { console.warn('Auto path: no route', f.actor.name, '→', t.actor.name); continue; }
+
+    const worldPts = raw.map(p => { const w = gridToWorld(p.col, p.row, gridData); return { x: w.x, z: w.z }; });
+    const simple = simplifyPath(worldPts, tolerance);
+    const waypoints = simple.map(p => ({ position: [p.x, pathSurfaceY, p.z], actorName: null }));
+    if (waypoints.length > 0) { waypoints[0].actorName = f.actor.name; waypoints[waypoints.length - 1].actorName = t.actor.name; }
+
+    const pid = pathIdCounter++;
+    const pathData = { id: pid, name: '[Auto] ' + f.actor.name + ' → ' + t.actor.name,
+      color: (f.type === 'start' || t.type === 'start') ? '#4a90e8' : '#e8854a', waypoints, group: null };
+    customPaths.push(pathData);
+    renderCustomPath(pathData);
+    generated++;
+  }
+
+  if (generated === 0) alert('No valid routes found. Check that ground is tagged and nodes are reachable.');
+  else { updatePathList(); saveCustomPaths(); }
 }
 
 // ============================================================
@@ -1614,6 +1880,14 @@ function bindEvents() {
   document.getElementById('btn-export-paths').onclick = exportPaths;
   document.getElementById('btn-import-paths').onclick = () => document.getElementById('path-file-input').click();
   document.getElementById('path-file-input').onchange = (e) => { if (e.target.files[0]) importPaths(e.target.files[0]); };
+
+  // Auto path
+  const autoCellSlider = document.getElementById('auto-cell-size');
+  const autoCellVal = document.getElementById('auto-cell-val');
+  if (autoCellSlider) {
+    autoCellSlider.oninput = () => { autoCellVal.textContent = autoCellSlider.value; };
+    document.getElementById('btn-auto-path').onclick = () => { generateAutoPath(parseInt(autoCellSlider.value)); };
+  }
 
   // Viewport interaction
   const viewport = document.getElementById('viewport');
