@@ -6,6 +6,7 @@ import unreal
 import json
 import os
 import re
+import math
 import bisect
 from datetime import datetime
 from collections import defaultdict
@@ -74,6 +75,202 @@ def is_decoration_actor(tags):
     """Actor with no meaningful tags is considered decoration layer."""
     meaningful = [t for t in tags if t.strip()]
     return len(meaningful) == 0
+
+
+def _build_obb(actor):
+    """
+    Build an OBB (oriented bounding box) for a blockout actor.
+    Returns (center, half_extents, inv_rot_matrix, fwd_rot_matrix) where:
+      - inv_rot transforms world points into the box's local space
+      - fwd_rot transforms local points into world space
+
+    BlockoutTools box pivot: corner (min corner in local space).
+    Local-space box occupies [0, boxSize.x] x [0, boxSize.y] x [0, boxSize.z].
+    Center in local space = boxSize / 2.
+    """
+    loc = actor.get_actor_location()
+    rot = actor.get_actor_rotation()
+
+    # BoxSize (full size, not half-extent)
+    box_size = None
+    for prop in BOX_SIZE_PROPS:
+        try:
+            val = actor.get_editor_property(prop)
+            if val is not None:
+                box_size = (val.x, val.y, val.z)
+                break
+        except:
+            continue
+    if box_size is None:
+        return None
+
+    scale = actor.get_actor_scale3d()
+    hx = box_size[0] * scale.x * 0.5
+    hy = box_size[1] * scale.y * 0.5
+    hz = box_size[2] * scale.z * 0.5
+
+    yaw_r = math.radians(rot.yaw)
+    pitch_r = math.radians(rot.pitch)
+    roll_r = math.radians(rot.roll)
+
+    cy, sy = math.cos(yaw_r), math.sin(yaw_r)
+    cp, sp = math.cos(pitch_r), math.sin(pitch_r)
+    cr, sr = math.cos(roll_r), math.sin(roll_r)
+
+    # Forward rotation matrix rows (local->world)
+    m00 = cy * cp;          m01 = cy * sp * sr - sy * cr;   m02 = -(cy * sp * cr + sy * sr)
+    m10 = sy * cp;          m11 = sy * sp * sr + cy * cr;   m12 = -(sy * sp * cr - cy * sr)
+    m20 = sp;               m21 = -cp * sr;                 m22 = cp * cr
+
+    fwd_rot = ((m00, m01, m02), (m10, m11, m12), (m20, m21, m22))
+
+    # Center in world space: pivot + rotation * (half_extents)
+    cx = loc.x + m00 * hx + m01 * hy + m02 * hz
+    cy_w = loc.y + m10 * hx + m11 * hy + m12 * hz
+    cz = loc.z + m20 * hx + m21 * hy + m22 * hz
+
+    # Inverse rotation = transpose
+    inv_rot = ((m00, m10, m20), (m01, m11, m21), (m02, m12, m22))
+
+    return ((cx, cy_w, cz), (hx, hy, hz), inv_rot, fwd_rot)
+
+
+def _point_in_obb_2d(px, py, obb):
+    """Check if world XY falls inside the OBB's local X/Y ranges (ignoring Z)."""
+    center, half, inv_rot, _ = obb
+    dx = px - center[0]
+    dy = py - center[1]
+    lx = inv_rot[0][0] * dx + inv_rot[0][1] * dy
+    ly = inv_rot[1][0] * dx + inv_rot[1][1] * dy
+    return abs(lx) <= half[0] and abs(ly) <= half[1]
+
+
+def _ground_top_z(px, py, g_obb):
+    """
+    Given world XY on the ground, compute world Z of the ground's top surface.
+    The top surface in local space is at lz = +half_z.
+    """
+    center, half, inv_rot, fwd_rot = g_obb
+    dx = px - center[0]
+    dy = py - center[1]
+    # Get local X, Y from world delta (only need XY components)
+    lx = inv_rot[0][0] * dx + inv_rot[0][1] * dy
+    ly = inv_rot[1][0] * dx + inv_rot[1][1] * dy
+    lz = half[2]  # top surface
+    # Transform local (lx, ly, lz) back to world Z
+    wz = center[2] + fwd_rot[2][0] * lx + fwd_rot[2][1] * ly + fwd_rot[2][2] * lz
+    return wz
+
+
+def _point_in_obb_3d(px, py, pz, obb):
+    """Check if world point (px,py,pz) falls inside the OBB volume."""
+    center, half, inv_rot, _ = obb
+    dx = px - center[0]
+    dy = py - center[1]
+    dz = pz - center[2]
+    lx = inv_rot[0][0] * dx + inv_rot[0][1] * dy + inv_rot[0][2] * dz
+    ly = inv_rot[1][0] * dx + inv_rot[1][1] * dy + inv_rot[1][2] * dz
+    lz = inv_rot[2][0] * dx + inv_rot[2][1] * dy + inv_rot[2][2] * dz
+    return abs(lx) <= half[0] and abs(ly) <= half[1] and abs(lz) <= half[2]
+
+
+def compute_walkable_area(actor, obstacle_actors, cell_size=50.0):
+    """
+    Compute walkable area on a ground actor's top surface by subtracting
+    obstacle cross-sections using precise OBB (oriented bounding box) checks.
+
+    For each sampling point on the ground's AABB grid:
+    1. 2D OBB check: is the XY inside the rotated ground footprint?
+    2. Compute actual world Z on the ground's top surface at that XY
+    3. 3D OBB check: is that (x, y, z) point inside any obstacle's rotated volume?
+    """
+    label = actor.get_actor_label()
+    unreal.log(f"[Walkable] Computing walkable area for '{label}'...")
+
+    # Ground OBB (for 2D XY containment check)
+    ground_obb = _build_obb(actor)
+    if ground_obb is None:
+        unreal.log_warning(f"[Walkable] Cannot build OBB for ground '{label}'")
+        return None
+
+    # Ground AABB for sampling grid bounds and Z overlap tests
+    origin, extent = actor.get_actor_bounds(False)
+    top_z = origin.z + extent.z
+    bot_z = origin.z - extent.z
+    min_x = origin.x - extent.x
+    max_x = origin.x + extent.x
+    min_y = origin.y - extent.y
+    max_y = origin.y + extent.y
+
+    cols = max(1, int((max_x - min_x) / cell_size))
+    rows = max(1, int((max_y - min_y) / cell_size))
+    total = cols * rows
+
+    unreal.log(f"[Walkable] '{label}': {cols}x{rows} grid ({total} cells), cellSize={cell_size}")
+
+    # Phase 1: All cells start as walkable
+    grid = [[1] * cols for _ in range(rows)]
+
+    # Phase 2: Build OBBs for obstacles
+    # Pre-filter: AABB XY overlap + AABB Z overlap with ground
+    obstacle_obbs = []
+    for obs in obstacle_actors:
+        try:
+            o_origin, o_extent = obs.get_actor_bounds(False)
+            # AABB XY overlap
+            if (o_origin.x + o_extent.x) <= min_x or (o_origin.x - o_extent.x) >= max_x:
+                continue
+            if (o_origin.y + o_extent.y) <= min_y or (o_origin.y - o_extent.y) >= max_y:
+                continue
+            # AABB Z overlap (obstacle volume must intersect ground volume)
+            if (o_origin.z + o_extent.z) <= bot_z or (o_origin.z - o_extent.z) >= top_z:
+                continue
+
+            obb = _build_obb(obs)
+            if obb is not None:
+                obstacle_obbs.append(obb)
+        except:
+            continue
+
+    unreal.log(f"[Walkable] '{label}': {len(obstacle_obbs)} obstacles pass AABB pre-filter")
+
+    # Phase 3: For each grid cell:
+    #   - Point must be inside ground's 2D XY footprint (handles rotated ground)
+    #   - Compute the actual Z on the ground's top surface at this XY
+    #   - Check if that 3D point is inside any obstacle's OBB volume
+    subtracted = 0
+    outside_ground = 0
+    for r in range(rows):
+        y = min_y + (r + 0.5) * cell_size
+        for c in range(cols):
+            x = min_x + (c + 0.5) * cell_size
+            # Must be inside ground's 2D footprint
+            if not _point_in_obb_2d(x, y, ground_obb):
+                grid[r][c] = 0
+                outside_ground += 1
+                continue
+            # Get actual Z on ground top surface at this XY
+            z = _ground_top_z(x, y, ground_obb)
+            # Check against obstacle 3D OBBs
+            for obb in obstacle_obbs:
+                if _point_in_obb_3d(x, y, z, obb):
+                    grid[r][c] = 0
+                    subtracted += 1
+                    break
+
+    walkable = total - subtracted - outside_ground
+    pct = (100.0 * walkable / total) if total > 0 else 0
+    unreal.log(f"[Walkable] '{label}': {walkable}/{total} walkable ({pct:.1f}%), outside_ground={outside_ground}, obstacle_subtract={subtracted}")
+
+    return {
+        "originX": round(min_x, 2),
+        "originY": round(min_y, 2),
+        "topZ": round(top_z, 2),
+        "cellSize": cell_size,
+        "cols": cols,
+        "rows": rows,
+        "grid": grid
+    }
 
 
 # ============================================================
@@ -277,7 +474,7 @@ def extract_actor_data(actor):
         except:
             pass
 
-        return {
+        data = {
             "name": actor.get_actor_label(),
             "class": class_name,
             "shapeType": shape_type,
@@ -292,6 +489,8 @@ def extract_actor_data(actor):
             "tags": tags,
             "floor": None  # assigned later
         }
+
+        return data
     except Exception as e:
         unreal.log_warning(f"[Extract] Failed for '{actor.get_actor_label()}': {e}")
         return None
@@ -509,12 +708,14 @@ def main():
         unreal.log_warning("[Main] No BlockoutTools actors found in level. Aborting.")
         return
 
-    # Step 2: Extract data from each actor
+    # Step 2: Extract data from each actor (keep UE actor reference for NavMesh pass)
     actor_data_list = []
+    ue_actor_map = {}  # data dict id -> UE actor object
     for actor in actors:
         data = extract_actor_data(actor)
         if data is not None:
             actor_data_list.append(data)
+            ue_actor_map[id(data)] = actor
 
     if not actor_data_list:
         unreal.log_warning("[Main] No actor data extracted. Aborting.")
@@ -534,6 +735,37 @@ def main():
         before = len(actor_data_list)
         actor_data_list = [d for d in actor_data_list if d["name"] not in floor_marker_names]
         unreal.log(f"[Main] Removed {before - len(actor_data_list)} floor marker(s) from output")
+
+    # Step 3.6: Compute walkable areas (ground surface - obstacle cross-sections)
+    ground_data = []
+    for d in actor_data_list:
+        tags_lower = [t.lower() for t in d.get("tags", [])]
+        if 'ground' in tags_lower:
+            ground_data.append(d)
+
+    if ground_data:
+        # Collect ALL non-ground UE actor objects (any floor, any tag)
+        obstacle_ue_actors = []
+        ground_names = set(d["name"] for d in ground_data)
+        for d in actor_data_list:
+            if d["name"] in ground_names:
+                continue
+            obs_ue = ue_actor_map.get(id(d))
+            if obs_ue:
+                obstacle_ue_actors.append(obs_ue)
+
+        unreal.log(f"[Walkable] Found {len(ground_data)} ground actors, {len(obstacle_ue_actors)} potential obstacles")
+
+        for gd in ground_data:
+            g_ue_actor = ue_actor_map.get(id(gd))
+            if g_ue_actor is None:
+                continue
+            try:
+                walkable = compute_walkable_area(g_ue_actor, obstacle_ue_actors, cell_size=15.0)
+                if walkable:
+                    gd["walkableGrid"] = walkable
+            except Exception as e:
+                unreal.log_warning(f"[Walkable] Failed for '{gd['name']}': {e}")
 
     # Clean up internal flags
     for d in actor_data_list:

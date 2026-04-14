@@ -122,6 +122,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
 #viewport { grid-area: viewport; position: relative; background: var(--bg-void); overflow: hidden; }
 #viewport canvas { display: block; }
 #viewport.draw-mode { cursor: crosshair !important; }
+#viewport.eraser-mode { cursor: none !important; }
+#eraser-cursor { position: fixed; pointer-events: none; border: 2px solid rgba(224, 85, 85, 0.7); background: rgba(224, 85, 85, 0.1); border-radius: 50%; z-index: 60; display: none; transform: translate(-50%, -50%); }
 .label-renderer { position: absolute !important; top: 0; left: 0; pointer-events: none; }
 .area-label { padding: 3px 8px; font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text-primary); background: rgba(14, 16, 21, 0.85); border: 1px solid var(--border-active); border-radius: 4px; white-space: nowrap; pointer-events: auto; backdrop-filter: blur(4px); cursor: grab; user-select: none; }
 .area-label:active { cursor: grabbing; }
@@ -199,6 +201,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
       <button class="btn" id="btn-import-labels" title="Import labels">Labels&uarr;</button>
       <button class="btn" id="btn-share" title="Export self-contained HTML for sharing" style="color:var(--green);border-color:rgba(80,184,122,0.3);">Share</button>
       <div class="toolbar-divider"></div>
+      <button class="btn" id="btn-eraser" title="Eraser tool - erase walkable areas">Eraser</button>
+      <div class="cam-speed-group" id="eraser-radius-group" style="display:none;">
+        <label>R</label>
+        <input type="range" class="cam-speed-slider" id="eraser-radius-slider" min="50" max="500" step="10" value="150">
+        <span class="cam-speed-val" id="eraser-radius-val">150</span>
+      </div>
+      <div class="toolbar-divider"></div>
       <div class="cam-speed-group">
         <label>Speed</label>
         <input type="range" class="cam-speed-slider" id="cam-speed-slider" min="0" max="1" step="0.01" value="0.5">
@@ -235,19 +244,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
           <button class="btn" id="btn-finish-draw" style="color:var(--green);">Finish</button>
         </div>
       </div>
-    </div>
-
-    <div class="sidebar-section">
-      <div class="section-title">Auto Path</div>
-      <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">
-        Requires UE tags: <code>ground</code>, <code>pathstart</code>, <code>pathend</code>, <code>pathbranch</code>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-        <label style="font-size:11px;white-space:nowrap;">Cell size</label>
-        <input type="range" id="auto-cell-size" min="20" max="200" value="50" style="flex:1;">
-        <span id="auto-cell-val" style="font-size:11px;min-width:28px;">50</span>
-      </div>
-      <button class="btn" id="btn-auto-path" style="width:100%;justify-content:center;">Generate Auto Path</button>
     </div>
 
     <div class="sidebar-section">
@@ -290,6 +286,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
 
 <input type="file" id="label-file-input" accept=".json" style="display:none;">
 <input type="file" id="path-file-input" accept=".json" style="display:none;">
+<div id="eraser-cursor"></div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -328,6 +325,7 @@ let labelOffsetsStore = {};  // { actorName: [x, y, z] } local positions for dra
 
 // Label drag state
 let draggingLabel = null;      // { actorName, mesh, labelObj }
+let _pendingWalkableLabelHit = null;  // { mesh, point, labelKey } for walkable overlay labels
 
 // Custom path drawing state
 let isDrawing = false;
@@ -337,6 +335,11 @@ let previewLine = null;
 let waypointMarkers = [];           // temp sphere meshes while drawing
 let customPaths = [];               // [{id, name, color, waypoints, group (THREE.Group)}]
 let pathIdCounter = 0;
+
+// Eraser state
+let isErasing = false;
+let eraserRadius = 150;       // world-space radius
+let eraserMouseDown = false;
 
 // WASD fly camera state
 const keysPressed = {};
@@ -377,7 +380,7 @@ function initScene() {
   camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 1, 500000);
   camera.position.set(2000, 2000, 2000);
 
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(viewport.clientWidth, viewport.clientHeight);
   viewport.appendChild(renderer.domElement);
@@ -612,6 +615,7 @@ function buildScene(data) {
   customPaths.forEach(p => { if (p.group) scene.remove(p.group); });
   customPaths.length = 0;
   pathIdCounter = 0;
+  if (walkableOverlayMeshes.length) clearWalkableOverlays();
 
   data.floors.forEach(fi => {
     const group = new THREE.Group();
@@ -685,6 +689,12 @@ function buildScene(data) {
     actorMeshes.push(mesh);
     actorDataMap.set(mesh.uuid, actor);
 
+    // Hide ground/mainpath tagged actors — walkable overlay replaces their visual
+    const tags = actor.tags || [];
+    if (tags.some(t => t === 'ground' || t.startsWith('mainpath'))) {
+      mesh.visible = false;
+    }
+
     if (isDeco) {
       const group = decorationGroups[floorIdx] || decorationGroups[data.floors[0]];
       if (group) group.add(mesh);
@@ -737,12 +747,16 @@ function buildScene(data) {
 
   loadLabels(); applyLabels();
   loadCustomPaths(); renderAllCustomPaths();
+  generateWalkableOverlay();
 }
 
 // ============================================================
 // Custom Path Drawing
 // ============================================================
 function startDrawing() {
+  // Mutual exclusion with eraser
+  if (isErasing) toggleEraser();
+
   const nameInput = document.getElementById('path-name-input');
   const colorInput = document.getElementById('path-color-input');
   const name = nameInput.value.trim() || `Path ${pathIdCounter + 1}`;
@@ -874,256 +888,264 @@ function getMouseWorldPosition() {
 }
 
 // ============================================================
-// Auto Pathfinding
+// Walkable Area Visualization
 // ============================================================
+let walkableOverlayMeshes = [];
 
-function getActorWorldBoundsXZ(actor) {
-  const pos = uePos(actor.location.x, actor.location.y, actor.location.z);
-  const size = actor.actualSize || actor.boxSize;
-  if (!size) return null;
-  const dim = ueSize(size.x, size.y, size.z);
-  return {
-    minX: pos.x, maxX: pos.x + dim.w,
-    minZ: pos.z, maxZ: pos.z + dim.d,
-    minY: pos.y, maxY: pos.y + dim.h,
-    centerX: pos.x + dim.w / 2,
-    centerZ: pos.z + dim.d / 2,
-    topY: pos.y + dim.h
+function clearWalkableOverlays() {
+  walkableOverlayMeshes.forEach(m => { if (m.parent) m.parent.remove(m); m.geometry.dispose(); m.material.dispose(); });
+  walkableOverlayMeshes = [];
+}
+
+// Cache OBB data per actor to avoid recomputation
+const _actorOBBCache = new Map();
+
+function getActorOBB(actor) {
+  if (_actorOBBCache.has(actor)) return _actorOBBCache.get(actor);
+
+  const loc = actor.location;
+  const rot = actor.rotation;
+  const bs = actor.boxSize;
+  const sc = actor.scale || { x: 1, y: 1, z: 1 };
+  if (!loc || !rot || !bs) { _actorOBBCache.set(actor, null); return null; }
+
+  const hx = bs.x * sc.x * 0.5;
+  const hy = bs.y * sc.y * 0.5;
+  const hz = bs.z * sc.z * 0.5;
+
+  const d2r = Math.PI / 180;
+  const yaw_r = rot.yaw * d2r, pitch_r = rot.pitch * d2r, roll_r = rot.roll * d2r;
+  const cy = Math.cos(yaw_r), sy = Math.sin(yaw_r);
+  const cp = Math.cos(pitch_r), sp = Math.sin(pitch_r);
+  const cr = Math.cos(roll_r), sr = Math.sin(roll_r);
+
+  // Forward rotation matrix (local→world), same as Python _build_obb
+  const m00 = cy*cp,          m01 = cy*sp*sr - sy*cr,   m02 = -(cy*sp*cr + sy*sr);
+  const m10 = sy*cp,          m11 = sy*sp*sr + cy*cr,   m12 = -(sy*sp*cr - cy*sr);
+  const m20 = sp,             m21 = -cp*sr,             m22 = cp*cr;
+
+  // Center = pivot + rotation * half_extents (corner pivot)
+  const cx = loc.x + m00*hx + m01*hy + m02*hz;
+  const cyW = loc.y + m10*hx + m11*hy + m12*hz;
+  const cz = loc.z + m20*hx + m21*hy + m22*hz;
+
+  // Inverse = transpose
+  const obb = {
+    center: [cx, cyW, cz],
+    half: [hx, hy, hz],
+    inv: [[m00,m10,m20],[m01,m11,m21],[m02,m12,m22]],
+    fwd: [[m00,m01,m02],[m10,m11,m12],[m20,m21,m22]]
   };
+  _actorOBBCache.set(actor, obb);
+  return obb;
 }
 
-function rasterizeGround(groundActors, cellSize) {
-  let gMinX = Infinity, gMaxX = -Infinity, gMinZ = Infinity, gMaxZ = -Infinity;
-  const boundsArr = [];
-  for (const actor of groundActors) {
-    const b = getActorWorldBoundsXZ(actor);
-    if (!b) continue;
-    boundsArr.push(b);
-    gMinX = Math.min(gMinX, b.minX); gMaxX = Math.max(gMaxX, b.maxX);
-    gMinZ = Math.min(gMinZ, b.minZ); gMaxZ = Math.max(gMaxZ, b.maxZ);
-  }
-  if (boundsArr.length === 0) return null;
+function computeGroundSurfaceZ(ueX, ueY, actor) {
+  const obb = getActorOBB(actor);
+  if (!obb) return actor.walkableGrid ? actor.walkableGrid.topZ : 0;
 
-  const margin = cellSize * 2;
-  gMinX -= margin; gMaxX += margin; gMinZ -= margin; gMaxZ += margin;
-  const cols = Math.ceil((gMaxX - gMinX) / cellSize);
-  const rows = Math.ceil((gMaxZ - gMinZ) / cellSize);
-
-  // Limit grid size to prevent memory issues
-  if (cols * rows > 4000000) {
-    alert('Grid too large (' + cols + 'x' + rows + '). Increase cell size.');
-    return null;
-  }
-
-  const grid = [];
-  for (let r = 0; r < rows; r++) grid.push(new Uint8Array(cols));
-
-  for (const b of boundsArr) {
-    const c0 = Math.max(0, Math.floor((b.minX - gMinX) / cellSize));
-    const c1 = Math.min(cols - 1, Math.floor((b.maxX - gMinX) / cellSize));
-    const r0 = Math.max(0, Math.floor((b.minZ - gMinZ) / cellSize));
-    const r1 = Math.min(rows - 1, Math.floor((b.maxZ - gMinZ) / cellSize));
-    for (let r = r0; r <= r1; r++)
-      for (let c = c0; c <= c1; c++)
-        grid[r][c] = 1;
-  }
-
-  return { grid, originX: gMinX, originZ: gMinZ, cols, rows, cellSize };
+  const dx = ueX - obb.center[0];
+  const dy = ueY - obb.center[1];
+  const lx = obb.inv[0][0]*dx + obb.inv[0][1]*dy;
+  const ly = obb.inv[1][0]*dx + obb.inv[1][1]*dy;
+  const lz = obb.half[2]; // top surface
+  return obb.center[2] + obb.fwd[2][0]*lx + obb.fwd[2][1]*ly + obb.fwd[2][2]*lz;
 }
 
-function markObstacles(gridData, obstacleActors, groundTopY, groundAvgH) {
-  const threshold = groundTopY + groundAvgH * 1.5;
-  for (const actor of obstacleActors) {
-    const b = getActorWorldBoundsXZ(actor);
-    if (!b) continue;
-    if (b.minY > threshold) continue; // floating — skip
-    const c0 = Math.max(0, Math.floor((b.minX - gridData.originX) / gridData.cellSize));
-    const c1 = Math.min(gridData.cols - 1, Math.floor((b.maxX - gridData.originX) / gridData.cellSize));
-    const r0 = Math.max(0, Math.floor((b.minZ - gridData.originZ) / gridData.cellSize));
-    const r1 = Math.min(gridData.rows - 1, Math.floor((b.maxZ - gridData.originZ) / gridData.cellSize));
-    for (let r = r0; r <= r1; r++)
-      for (let c = c0; c <= c1; c++)
-        gridData.grid[r][c] = 0;
-  }
-}
-
-function worldToGrid(wx, wz, gd) {
-  return { col: Math.floor((wx - gd.originX) / gd.cellSize), row: Math.floor((wz - gd.originZ) / gd.cellSize) };
-}
-function gridToWorld(col, row, gd) {
-  return { x: gd.originX + (col + 0.5) * gd.cellSize, z: gd.originZ + (row + 0.5) * gd.cellSize };
-}
-
-// --- A* on 2D grid (8-dir, binary heap) ---
-function _heapPush(h, v) {
-  h.push(v); let i = h.length - 1;
-  while (i > 0) { const p = (i - 1) >> 1; if (h[p][0] <= h[i][0]) break; [h[p], h[i]] = [h[i], h[p]]; i = p; }
-}
-function _heapPop(h) {
-  const top = h[0], last = h.pop();
-  if (h.length > 0) { h[0] = last; let i = 0; for (;;) { let s = i; const l = 2*i+1, r = 2*i+2;
-    if (l < h.length && h[l][0] < h[s][0]) s = l; if (r < h.length && h[r][0] < h[s][0]) s = r;
-    if (s === i) break; [h[i], h[s]] = [h[s], h[i]]; i = s; } }
-  return top;
-}
-
-function astarGrid(grid, sc, sr, ec, er, cols, rows) {
-  if (sc < 0 || sc >= cols || sr < 0 || sr >= rows) return null;
-  if (ec < 0 || ec >= cols || er < 0 || er >= rows) return null;
-  if (!grid[sr][sc] || !grid[er][ec]) return null;
-
-  const S2 = Math.SQRT2;
-  const dirs = [[-1,0,1],[1,0,1],[0,-1,1],[0,1,1],[-1,-1,S2],[1,-1,S2],[-1,1,S2],[1,1,S2]];
-  const total = rows * cols;
-  const gS = new Float32Array(total).fill(Infinity);
-  const from = new Int32Array(total).fill(-1);
-  const closed = new Uint8Array(total);
-  const idx = (r, c) => r * cols + c;
-  const si = idx(sr, sc), ei = idx(er, ec);
-  gS[si] = 0;
-
-  function h(c1, r1) { const dx = Math.abs(c1 - ec), dz = Math.abs(r1 - er); return Math.sqrt(dx*dx + dz*dz); }
-  const heap = [[h(sc, sr), si]];
-
-  while (heap.length > 0) {
-    const [, ci] = _heapPop(heap);
-    if (ci === ei) break;
-    if (closed[ci]) continue;
-    closed[ci] = 1;
-    const cr = (ci / cols) | 0, cc = ci % cols;
-
-    for (const [dr, dc, cost] of dirs) {
-      const nr = cr + dr, nc = cc + dc;
-      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
-      if (!grid[nr][nc]) continue;
-      const ni = idx(nr, nc);
-      if (closed[ni]) continue;
-      if (dr !== 0 && dc !== 0 && (!grid[cr + dr][cc] || !grid[cr][cc + dc])) continue; // no corner-cutting
-      const tg = gS[ci] + cost;
-      if (tg < gS[ni]) { gS[ni] = tg; from[ni] = ci; _heapPush(heap, [tg + h(nc, nr), ni]); }
-    }
-  }
-
-  if (from[ei] === -1 && ei !== si) return null;
-  const path = [];
-  for (let c = ei; c !== -1; c = from[c]) path.push({ col: c % cols, row: (c / cols) | 0 });
-  path.reverse();
-  return path;
-}
-
-// --- Douglas-Peucker simplification ---
-function _ptLineDist(p, a, b) {
-  const dx = b.x - a.x, dz = b.z - a.z, lenSq = dx*dx + dz*dz;
-  if (lenSq === 0) return Math.hypot(p.x - a.x, p.z - a.z);
-  const t = Math.max(0, Math.min(1, ((p.x - a.x)*dx + (p.z - a.z)*dz) / lenSq));
-  return Math.hypot(p.x - (a.x + t*dx), p.z - (a.z + t*dz));
-}
-function simplifyPath(pts, tol) {
-  if (pts.length <= 2) return pts;
-  let mx = 0, mi = 0;
-  for (let i = 1; i < pts.length - 1; i++) { const d = _ptLineDist(pts[i], pts[0], pts[pts.length-1]); if (d > mx) { mx = d; mi = i; } }
-  if (mx > tol) { const l = simplifyPath(pts.slice(0, mi+1), tol), r = simplifyPath(pts.slice(mi), tol); return l.slice(0,-1).concat(r); }
-  return [pts[0], pts[pts.length-1]];
-}
-
-// --- MST (Prim) ---
-function computeMST(nodes) {
-  if (nodes.length <= 1) return [];
-  const n = nodes.length, inM = new Uint8Array(n), minE = new Float32Array(n).fill(Infinity), minF = new Int32Array(n).fill(-1);
-  const edges = []; minE[0] = 0;
-  for (let iter = 0; iter < n; iter++) {
-    let u = -1;
-    for (let i = 0; i < n; i++) if (!inM[i] && (u === -1 || minE[i] < minE[u])) u = i;
-    inM[u] = 1;
-    if (minF[u] !== -1) edges.push([minF[u], u]);
-    for (let v = 0; v < n; v++) { if (inM[v]) continue;
-      const d = Math.hypot(nodes[u].x - nodes[v].x, nodes[u].z - nodes[v].z);
-      if (d < minE[v]) { minE[v] = d; minF[v] = u; } }
-  }
-  return edges;
-}
-
-// --- Snap to nearest walkable cell ---
-function snapToWalkable(row, col, grid, rows, cols, maxRadius) {
-  if (row >= 0 && row < rows && col >= 0 && col < cols && grid[row][col]) return { row, col };
-  for (let r = 1; r <= maxRadius; r++) {
-    for (let dr = -r; dr <= r; dr++) {
-      for (let dc = -r; dc <= r; dc++) {
-        if (Math.abs(dr) !== r && Math.abs(dc) !== r) continue;
-        const nr = row + dr, nc = col + dc;
-        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc]) return { row: nr, col: nc };
-      }
-    }
-  }
-  return null;
-}
-
-// --- Main entry ---
-function generateAutoPath(cellSize) {
+function generateWalkableOverlay() {
+  clearWalkableOverlays();
+  _actorOBBCache.clear();
   if (!levelData) return;
 
-  const groundActors = [], keyNodes = [], nonGroundActors = [];
-  for (const actor of levelData.actors) {
-    const tags = (actor.tags || []).map(t => t.toLowerCase());
-    const isGround = tags.includes('ground');
-    if (isGround) groundActors.push(actor);
-    else nonGroundActors.push(actor);
+  // Assign stencil ref per floor so overlapping overlays on the same floor
+  // only render each pixel once (prevents transparency stacking).
+  // Different floors get different refs so they don't interfere.
+  let nextStencilRef = 1;
+  const floorStencilRef = {};
 
-    const type = tags.includes('pathstart') ? 'start' : tags.includes('pathend') ? 'end' : tags.includes('pathbranch') ? 'branch' : null;
-    if (type) {
-      const b = getActorWorldBoundsXZ(actor);
-      if (b) keyNodes.push({ actor, type, x: b.centerX, z: b.centerZ, topY: b.topY });
+  for (const actor of levelData.actors) {
+    const wg = actor.walkableGrid;
+    if (!wg) continue;
+
+    const { originX, originY, cellSize, cols, rows, grid } = wg;
+    const floorIdx = actor.floor != null ? actor.floor : 0;
+
+    // Assign stencil ref for this floor (once per floor)
+    if (!(floorIdx in floorStencilRef)) {
+      floorStencilRef[floorIdx] = nextStencilRef++;
+    }
+    const stencilRef = floorStencilRef[floorIdx];
+
+    // Count walkable cells
+    let walkCount = 0;
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++)
+        if (grid[r] && grid[r][c]) walkCount++;
+    if (walkCount === 0) continue;
+
+    // Build mesh with per-vertex Z from ground surface OBB
+    const positions = new Float32Array(walkCount * 4 * 3);
+    const indices = new Uint32Array(walkCount * 6);
+    const cellEntries = []; // for eraser: [{key, ueX, ueY, cellSize, gridRef, r, c, vi}]
+    let vi = 0, ii = 0;
+
+    for (let r = 0; r < rows; r++) {
+      if (!grid[r]) continue;
+      for (let c = 0; c < cols; c++) {
+        if (!grid[r][c]) continue;
+        const ueX = originX + c * cellSize;
+        const ueY = originY + r * cellSize;
+        const x0 = ueX, x1 = ueX + cellSize;
+        const y0 = ueY, y1 = ueY + cellSize;
+
+        // Per-corner Z on ground's actual surface
+        const z00 = computeGroundSurfaceZ(x0, y0, actor) + 2;
+        const z10 = computeGroundSurfaceZ(x1, y0, actor) + 2;
+        const z11 = computeGroundSurfaceZ(x1, y1, actor) + 2;
+        const z01 = computeGroundSurfaceZ(x0, y1, actor) + 2;
+
+        cellEntries.push({ ueX, ueY, cellSize, gridRef: grid, r, c, vi });
+        const base = vi;
+        // Three.js: (ueX, ueZ, ueY) — Y axis = UE Z
+        positions[vi*3]=x0; positions[vi*3+1]=z00; positions[vi*3+2]=y0; vi++;
+        positions[vi*3]=x1; positions[vi*3+1]=z10; positions[vi*3+2]=y0; vi++;
+        positions[vi*3]=x1; positions[vi*3+1]=z11; positions[vi*3+2]=y1; vi++;
+        positions[vi*3]=x0; positions[vi*3+1]=z01; positions[vi*3+2]=y1; vi++;
+        indices[ii++]=base; indices[ii++]=base+1; indices[ii++]=base+2;
+        indices[ii++]=base; indices[ii++]=base+2; indices[ii++]=base+3;
+      }
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setIndex(new THREE.BufferAttribute(indices, 1));
+
+    // Stencil material: only render a pixel if stencil != ref, then write ref.
+    // All overlays on the same floor share the same ref → each pixel drawn once.
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x44cc44,
+      side: THREE.DoubleSide,
+      stencilWrite: true,
+      stencilRef: stencilRef,
+      stencilFunc: THREE.NotEqualStencilFunc,
+      stencilZPass: THREE.ReplaceStencilOp,
+      stencilFail: THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp
+    });
+
+    const overlay = new THREE.Mesh(geom, mat);
+    overlay.renderOrder = 1;
+    overlay.userData.floor = floorIdx;
+    overlay.userData.cellEntries = cellEntries; // for eraser
+
+    const group = floorGroups[floorIdx];
+    if (group) group.add(overlay);
+    else scene.add(overlay);
+
+    walkableOverlayMeshes.push(overlay);
+  }
+}
+
+// ============================================================
+// Eraser Tool
+// ============================================================
+function toggleEraser() {
+  isErasing = !isErasing;
+  const btn = document.getElementById('btn-eraser');
+  const viewport = document.getElementById('viewport');
+  const radiusGroup = document.getElementById('eraser-radius-group');
+  const eraserCursor = document.getElementById('eraser-cursor');
+
+  if (isErasing) {
+    // Mutual exclusion with drawing
+    if (isDrawing) cancelDrawing();
+    btn.classList.add('active');
+    viewport.classList.add('eraser-mode');
+    radiusGroup.style.display = '';
+    eraserCursor.style.display = 'block';
+    controls.enableRotate = false;
+    controls.enablePan = false;
+    controls.enableZoom = false;
+  } else {
+    btn.classList.remove('active');
+    viewport.classList.remove('eraser-mode');
+    radiusGroup.style.display = 'none';
+    eraserCursor.style.display = 'none';
+    controls.enableRotate = true;
+    controls.enablePan = true;
+    controls.enableZoom = true;
+  }
+}
+
+function updateEraserCursor(event) {
+  const eraserCursor = document.getElementById('eraser-cursor');
+  eraserCursor.style.left = event.clientX + 'px';
+  eraserCursor.style.top = event.clientY + 'px';
+
+  // Project world-space eraserRadius to screen pixels
+  // Use camera distance to the orbit target as reference
+  const dist = camera.position.distanceTo(controls.target);
+  const fov = camera.fov * Math.PI / 180;
+  const viewport = document.getElementById('viewport');
+  const screenH = viewport.clientHeight;
+  const worldToPixel = screenH / (2 * dist * Math.tan(fov / 2));
+  const pixelRadius = eraserRadius * worldToPixel;
+  const size = Math.max(10, pixelRadius * 2);
+  eraserCursor.style.width = size + 'px';
+  eraserCursor.style.height = size + 'px';
+}
+
+function eraseAt(event) {
+  const viewport = document.getElementById('viewport');
+  const rect = viewport.getBoundingClientRect();
+  const mx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const my = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(new THREE.Vector2(mx, my), camera);
+
+  // Try to hit walkable overlay meshes first
+  let hitPoint = null;
+  const overlayHits = raycaster.intersectObjects(walkableOverlayMeshes, false);
+  if (overlayHits.length > 0) {
+    hitPoint = overlayHits[0].point;
+  } else if (groundPlane) {
+    const gpHits = raycaster.intersectObject(groundPlane);
+    if (gpHits.length > 0) hitPoint = gpHits[0].point;
+  }
+  if (!hitPoint) return;
+
+  // Three.js coords: hitPoint.x = UE X, hitPoint.z = UE Y
+  const ueX = hitPoint.x;
+  const ueY = hitPoint.z;
+
+  for (const mesh of walkableOverlayMeshes) {
+    const entries = mesh.userData.cellEntries;
+    if (!entries) continue;
+
+    let changed = false;
+    const posAttr = mesh.geometry.attributes.position;
+
+    for (const cell of entries) {
+      if (!cell.gridRef[cell.r] || !cell.gridRef[cell.r][cell.c]) continue;
+      // Cell center in UE coords
+      const cx = cell.ueX + cell.cellSize * 0.5;
+      const cy = cell.ueY + cell.cellSize * 0.5;
+      // Quick AABB pre-filter
+      if (Math.abs(cx - ueX) > eraserRadius || Math.abs(cy - ueY) > eraserRadius) continue;
+      const dist = Math.sqrt((cx - ueX) * (cx - ueX) + (cy - ueY) * (cy - ueY));
+      if (dist <= eraserRadius) {
+        cell.gridRef[cell.r][cell.c] = 0;
+        const vb = cell.vi;
+        for (let v = 0; v < 4; v++) posAttr.setY(vb + v, -99999);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      posAttr.needsUpdate = true;
+      mesh.geometry.computeBoundingSphere();
     }
   }
-
-  if (groundActors.length === 0) { alert('No actors with "ground" tag found.\nTag ground blocks in UE with "ground".'); return; }
-  if (!keyNodes.some(n => n.type === 'start')) { alert('No actor with "pathstart" tag found.\nTag the start block in UE.'); return; }
-  if (!keyNodes.some(n => n.type === 'end')) { alert('No actor with "pathend" tag found.\nTag at least one end block in UE.'); return; }
-
-  const gridData = rasterizeGround(groundActors, cellSize);
-  if (!gridData) return;
-
-  // Ground surface stats
-  let totalTopY = 0, totalH = 0, gCnt = 0;
-  for (const a of groundActors) { const b = getActorWorldBoundsXZ(a); if (b) { totalTopY += b.topY; totalH += (b.maxY - b.minY); gCnt++; } }
-  const groundTopY = gCnt > 0 ? totalTopY / gCnt : 0;
-  const groundAvgH = gCnt > 0 ? totalH / gCnt : 100;
-
-  markObstacles(gridData, nonGroundActors, groundTopY, groundAvgH);
-
-  // Map key nodes to grid
-  const mstNodes = keyNodes.map((kn, i) => {
-    const g = worldToGrid(kn.x, kn.z, gridData);
-    const snapped = snapToWalkable(g.row, g.col, gridData.grid, gridData.rows, gridData.cols, 20);
-    return { id: i, x: kn.x, z: kn.z, col: snapped ? snapped.col : g.col, row: snapped ? snapped.row : g.row, type: kn.type, actor: kn.actor };
-  });
-
-  const mstEdges = computeMST(mstNodes);
-
-  const pathSurfaceY = groundTopY + 5;
-  const tolerance = cellSize * 1.5;
-  let generated = 0;
-
-  for (const [fi, ti] of mstEdges) {
-    const f = mstNodes[fi], t = mstNodes[ti];
-    const raw = astarGrid(gridData.grid, f.col, f.row, t.col, t.row, gridData.cols, gridData.rows);
-    if (!raw) { console.warn('Auto path: no route', f.actor.name, '→', t.actor.name); continue; }
-
-    const worldPts = raw.map(p => { const w = gridToWorld(p.col, p.row, gridData); return { x: w.x, z: w.z }; });
-    const simple = simplifyPath(worldPts, tolerance);
-    const waypoints = simple.map(p => ({ position: [p.x, pathSurfaceY, p.z], actorName: null }));
-    if (waypoints.length > 0) { waypoints[0].actorName = f.actor.name; waypoints[waypoints.length - 1].actorName = t.actor.name; }
-
-    const pid = pathIdCounter++;
-    const pathData = { id: pid, name: '[Auto] ' + f.actor.name + ' → ' + t.actor.name,
-      color: (f.type === 'start' || t.type === 'start') ? '#4a90e8' : '#e8854a', waypoints, group: null };
-    customPaths.push(pathData);
-    renderCustomPath(pathData);
-    generated++;
-  }
-
-  if (generated === 0) alert('No valid routes found. Check that ground is tagged and nodes are reachable.');
-  else { updatePathList(); saveCustomPaths(); }
 }
 
 // ============================================================
@@ -1321,9 +1343,28 @@ function setFloor(floor) {
     const decoGroup = decorationGroups[fi];
     const floorVisible = (floor === 'all' || fi === floor);
     if (group) group.visible = floorVisible;
-    // Floor priority > decoration: decoration only visible when floor is visible AND decoration is on
     if (decoGroup) decoGroup.visible = floorVisible && showDecoration;
   });
+
+  // Explicitly toggle label visibility per floor
+  // (CSS2DRenderer may not fully respect ancestor visible in all versions)
+  for (const [name, labelObj] of Object.entries(labelObjects)) {
+    if (floor === 'all') {
+      labelObj.visible = true;
+      continue;
+    }
+    // Determine label's floor
+    let labelFloor = null;
+    if (name.startsWith('wlk_')) {
+      const m = name.match(/^wlk_f(\d+)_/);
+      if (m) labelFloor = parseInt(m[1]);
+    } else {
+      // Box actor label — find actor's floor
+      const actor = levelData.actors.find(a => a.name === name);
+      if (actor) labelFloor = actor.floor;
+    }
+    labelObj.visible = (labelFloor === floor);
+  }
 }
 
 function toggleDecoration() {
@@ -1375,10 +1416,21 @@ function saveLabels() {
 function applyLabels() {
   Object.values(labelObjects).forEach(o => { if (o.parent) o.parent.remove(o); });
   Object.keys(labelObjects).forEach(k => delete labelObjects[k]);
+  // Box actor labels
   actorMeshes.forEach(mesh => {
     const text = labelsStore[mesh.userData.actorName];
     if (text) createLabel(mesh, text);
   });
+  // Walkable overlay labels (keys starting with "wlk_")
+  for (const [key, text] of Object.entries(labelsStore)) {
+    if (!key.startsWith('wlk_')) continue;
+    // Parse floor from key: "wlk_f{floor}_{x}_{y}"
+    const m = key.match(/^wlk_f(\d+)_/);
+    const floor = m ? parseInt(m[1]) : 0;
+    // Find overlay mesh for this floor
+    const overlayMesh = walkableOverlayMeshes.find(om => om.userData.floor === floor);
+    if (overlayMesh) createLabel(overlayMesh, text, key);
+  }
 }
 
 function getDefaultLabelPos(actor) {
@@ -1386,20 +1438,24 @@ function getDefaultLabelPos(actor) {
   return [sz ? sz.x / 2 : 0, sz ? sz.z + 25 : 50, sz ? sz.y / 2 : 0];
 }
 
-function createLabel(mesh, text) {
-  const name = mesh.userData.actorName;
+function createLabel(mesh, text, labelKey) {
+  // labelKey: for box labels = actorName, for walkable labels = "wlk_f0_1234_5678"
+  const name = labelKey || mesh.userData.actorName;
   if (labelObjects[name] && labelObjects[name].parent) labelObjects[name].parent.remove(labelObjects[name]);
   const div = document.createElement('div');
   div.className = 'area-label'; div.textContent = text;
   div.dataset.actorName = name;
   const labelObj = new CSS2DObject(div);
-  const actor = actorDataMap.get(mesh.uuid);
 
   // Use saved offset or default position
   const saved = labelOffsetsStore[name];
   if (saved) {
     labelObj.position.set(saved[0], saved[1], saved[2]);
+  } else if (name.startsWith('wlk_')) {
+    // Walkable overlay label: position at 0,30,0 in local (scene) space as default
+    labelObj.position.set(0, 30, 0);
   } else {
+    const actor = actorDataMap.get(mesh.uuid);
     const def = getDefaultLabelPos(actor);
     labelObj.position.set(def[0], def[1], def[2]);
   }
@@ -1412,7 +1468,7 @@ function createLabel(mesh, text) {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
-    draggingLabel = { actorName: name, mesh, labelObj, startX: e.clientX, startY: e.clientY, moved: false };
+    draggingLabel = { actorName: name, mesh, labelObj, startX: e.clientX, startY: e.clientY, moved: false, isWalkable: name.startsWith('wlk_') };
     controls.enabled = false;  // disable orbit during drag
   });
   // Double-click on label opens editor (since label captures events before the viewport)
@@ -1462,44 +1518,59 @@ function onLabelDragMove(event) {
     if (dx * dx + dy * dy < 16) return;
     draggingLabel.moved = true;
   }
-  const { mesh, labelObj, actorName } = draggingLabel;
+  const { mesh, labelObj, actorName, isWalkable } = draggingLabel;
   const viewport = document.getElementById('viewport');
   const rect = viewport.getBoundingClientRect();
   const mx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   const my = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-  // Raycast against the parent mesh to get a surface point
   const rc = new THREE.Raycaster();
   rc.setFromCamera(new THREE.Vector2(mx, my), camera);
-  const hits = rc.intersectObject(mesh, false);
 
-  let localPt;
-  if (hits.length > 0) {
-    // Convert world hit to mesh local space, offset along normal
-    localPt = mesh.worldToLocal(hits[0].point.clone());
-    if (hits[0].face) {
-      const n = hits[0].face.normal.clone().normalize();
-      localPt.addScaledVector(n, 5);
+  if (isWalkable) {
+    // Walkable overlay: raycast against overlay or fallback to horizontal plane
+    const hits = rc.intersectObjects(walkableOverlayMeshes, false);
+    let pt;
+    if (hits.length > 0) {
+      pt = hits[0].point.clone();
+      pt.y += 30; // float above surface
+    } else {
+      const worldPos = new THREE.Vector3();
+      labelObj.getWorldPosition(worldPos);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos.y);
+      const intersection = new THREE.Vector3();
+      if (!rc.ray.intersectPlane(plane, intersection)) return;
+      pt = intersection;
     }
+    // Overlay mesh has no transform, so world = local
+    labelObj.position.copy(pt);
   } else {
-    // No hit on mesh — project onto a plane at the label's current Y in world space
-    const worldPos = new THREE.Vector3();
-    labelObj.getWorldPosition(worldPos);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos.y);
-    const intersection = new THREE.Vector3();
-    if (!rc.ray.intersectPlane(plane, intersection)) return;
-    localPt = mesh.worldToLocal(intersection);
-  }
+    // Box actor label: raycast against the parent mesh
+    const hits = rc.intersectObject(mesh, false);
+    let localPt;
+    if (hits.length > 0) {
+      localPt = mesh.worldToLocal(hits[0].point.clone());
+      if (hits[0].face) {
+        const n = hits[0].face.normal.clone().normalize();
+        localPt.addScaledVector(n, 5);
+      }
+    } else {
+      const worldPos = new THREE.Vector3();
+      labelObj.getWorldPosition(worldPos);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos.y);
+      const intersection = new THREE.Vector3();
+      if (!rc.ray.intersectPlane(plane, intersection)) return;
+      localPt = mesh.worldToLocal(intersection);
+    }
 
-  // Clamp to box bounds
-  const bounds = getLabelBounds(mesh);
-  if (bounds) {
-    localPt.x = Math.max(bounds.minX, Math.min(bounds.maxX, localPt.x));
-    localPt.y = Math.max(bounds.minY, Math.min(bounds.maxY, localPt.y));
-    localPt.z = Math.max(bounds.minZ, Math.min(bounds.maxZ, localPt.z));
+    const bounds = getLabelBounds(mesh);
+    if (bounds) {
+      localPt.x = Math.max(bounds.minX, Math.min(bounds.maxX, localPt.x));
+      localPt.y = Math.max(bounds.minY, Math.min(bounds.maxY, localPt.y));
+      localPt.z = Math.max(bounds.minZ, Math.min(bounds.maxZ, localPt.z));
+    }
+    labelObj.position.copy(localPt);
   }
-
-  labelObj.position.copy(localPt);
 }
 
 function onLabelDragEnd(event) {
@@ -1526,6 +1597,12 @@ function onPointerMove(event) {
   const rect = viewport.getBoundingClientRect();
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  if (isErasing) {
+    updateEraserCursor(event);
+    if (eraserMouseDown) eraseAt(event);
+    return;
+  }
 
   if (isDrawing) return; // preview line handled in animate()
 
@@ -1564,6 +1641,13 @@ function onPointerDown(event) {
   const rect = viewport.getBoundingClientRect();
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  // Eraser mode
+  if (isErasing) {
+    eraserMouseDown = true;
+    eraseAt(event);
+    return;
+  }
 
   // Path drawing mode
   if (isDrawing) {
@@ -1614,8 +1698,32 @@ function onPointerDown(event) {
   }
 }
 
-function onDblClick() {
-  if (isDrawing) return;
+function onDblClick(event) {
+  if (isDrawing || isErasing) return;
+
+  // Try walkable overlay first
+  const viewport = document.getElementById('viewport');
+  const rect = viewport.getBoundingClientRect();
+  const mx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const my = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(new THREE.Vector2(mx, my), camera);
+
+  const overlayHits = raycaster.intersectObjects(walkableOverlayMeshes, false);
+  if (overlayHits.length > 0) {
+    const hit = overlayHits[0];
+    const mesh = hit.object;
+    // Generate a label key from UE world position (rounded to avoid floating point issues)
+    const ueX = Math.round(hit.point.x);
+    const ueY = Math.round(hit.point.z); // Three.js Z = UE Y
+    const floor = mesh.userData.floor != null ? mesh.userData.floor : 0;
+    const labelKey = `wlk_f${floor}_${ueX}_${ueY}`;
+    // Store hit info for label creation
+    _pendingWalkableLabelHit = { mesh, point: hit.point.clone(), labelKey };
+    openLabelEditor(labelKey);
+    return;
+  }
+
+  // Fallback: box actor label
   if (!selectedMesh) return;
   const actor = actorDataMap.get(selectedMesh.uuid);
   if (actor) openLabelEditor(actor.name);
@@ -1658,21 +1766,33 @@ function clearInfoPanel() {
 let editingActorName = null;
 function openLabelEditor(actorName) {
   editingActorName = actorName;
-  document.getElementById('modal-actor-name').textContent = actorName;
+  const subtitle = actorName.startsWith('wlk_') ? 'Walkable Area Label' : actorName;
+  document.getElementById('modal-actor-name').textContent = subtitle;
   document.getElementById('label-input').value = labelsStore[actorName] || '';
   document.getElementById('label-modal').classList.add('active');
   setTimeout(() => document.getElementById('label-input').focus(), 50);
 }
-function closeLabelEditor() { document.getElementById('label-modal').classList.remove('active'); editingActorName = null; }
+function closeLabelEditor() { document.getElementById('label-modal').classList.remove('active'); editingActorName = null; _pendingWalkableLabelHit = null; }
 function saveLabelFromEditor() {
   if (!editingActorName) return;
   const val = document.getElementById('label-input').value.trim();
   if (val) {
     labelsStore[editingActorName] = val;
+    // For new walkable labels, save position from hit point
+    if (_pendingWalkableLabelHit && editingActorName === _pendingWalkableLabelHit.labelKey && !labelOffsetsStore[editingActorName]) {
+      const hp = _pendingWalkableLabelHit.point;
+      // Store world position as the label offset (overlay mesh is at origin, no transform)
+      labelOffsetsStore[editingActorName] = [
+        Math.round(hp.x * 100) / 100,
+        Math.round((hp.y + 30) * 100) / 100,
+        Math.round(hp.z * 100) / 100
+      ];
+    }
   } else {
     delete labelsStore[editingActorName];
     delete labelOffsetsStore[editingActorName];
   }
+  _pendingWalkableLabelHit = null;
   saveLabels(); applyLabels();
   if (selectedMesh) { const a = actorDataMap.get(selectedMesh.uuid); if (a) updateInfoPanel(a); }
   closeLabelEditor();
@@ -1681,6 +1801,7 @@ function deleteLabelFromEditor() {
   if (!editingActorName) return;
   delete labelsStore[editingActorName];
   delete labelOffsetsStore[editingActorName];
+  _pendingWalkableLabelHit = null;
   saveLabels(); applyLabels();
   if (selectedMesh) { const a = actorDataMap.get(selectedMesh.uuid); if (a) updateInfoPanel(a); }
   closeLabelEditor();
@@ -1881,13 +2002,17 @@ function bindEvents() {
   document.getElementById('btn-import-paths').onclick = () => document.getElementById('path-file-input').click();
   document.getElementById('path-file-input').onchange = (e) => { if (e.target.files[0]) importPaths(e.target.files[0]); };
 
-  // Auto path
-  const autoCellSlider = document.getElementById('auto-cell-size');
-  const autoCellVal = document.getElementById('auto-cell-val');
-  if (autoCellSlider) {
-    autoCellSlider.oninput = () => { autoCellVal.textContent = autoCellSlider.value; };
-    document.getElementById('btn-auto-path').onclick = () => { generateAutoPath(parseInt(autoCellSlider.value)); };
-  }
+  // Eraser tool
+  document.getElementById('btn-eraser').onclick = toggleEraser;
+  const eraserSlider = document.getElementById('eraser-radius-slider');
+  const eraserValSpan = document.getElementById('eraser-radius-val');
+  eraserSlider.oninput = () => {
+    eraserRadius = parseInt(eraserSlider.value);
+    eraserValSpan.textContent = eraserRadius;
+  };
+  window.addEventListener('pointerup', e => {
+    if (e.button === 0) eraserMouseDown = false;
+  });
 
   // Viewport interaction
   const viewport = document.getElementById('viewport');
@@ -1902,7 +2027,7 @@ function bindEvents() {
 
   // First-person look: right mouse drag rotates camera around its own position
   viewport.addEventListener('pointerdown', e => {
-    if (e.button === 2 && !isDrawing) {
+    if (e.button === 2 && !isDrawing && !isErasing) {
       fpLookActive = true;
       fpPrevX = e.clientX;
       fpPrevY = e.clientY;
@@ -1943,6 +2068,9 @@ function bindEvents() {
     const key = e.key.toLowerCase();
     keysPressed[key] = true;
     if (e.shiftKey) keysPressed['shift'] = true;
+
+    // Eraser shortcut
+    if (isErasing && e.key === 'Escape') toggleEraser();
 
     // Drawing shortcuts
     if (isDrawing) {
@@ -1991,6 +2119,7 @@ if (_embedEl) {
       renderCustomPath(pd);
     });
     saveCustomPaths(); setupFloorControls(); setupLegend(); updatePathList();
+    generateWalkableOverlay();
     document.getElementById('level-name').textContent = levelData.levelName || 'Level';
     const mc = levelData.actors.filter(a => !a.isDecoration).length;
     const dc = levelData.actors.filter(a => a.isDecoration).length;
