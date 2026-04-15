@@ -411,10 +411,10 @@ function initScene() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x08090d);
 
-  camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 1, 500000);
+  camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.1, 500000);
   camera.position.set(2000, 2000, 2000);
 
-  renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
+  renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, logarithmicDepthBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(viewport.clientWidth, viewport.clientHeight);
   viewport.appendChild(renderer.domElement);
@@ -710,6 +710,7 @@ function buildScene(data) {
       transparent: false,
       opacity: 1.0,
       depthWrite: true,
+      side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.copy(pos);
@@ -770,7 +771,7 @@ function buildScene(data) {
   // Dynamically adapt camera/controls/fog to level size
   const farPlane = Math.max(maxSpan * 10, 500000);
   camera.far = farPlane;
-  camera.near = Math.max(1, maxSpan * 0.0005);
+  camera.near = 0.1;
   camera.updateProjectionMatrix();
   controls.maxDistance = farPlane * 0.8;
   scene.fog = new THREE.FogExp2(0x08090d, Math.min(0.00008, 2.0 / farPlane));
