@@ -670,7 +670,9 @@ function buildScene(data) {
     const rot = ueRot(actor.rotation.pitch, actor.rotation.yaw, actor.rotation.roll);
     const floorIdx = actor.floor != null ? actor.floor : 0;
     const isDeco = actor.isDecoration || false;
-    const colorHex = isDeco ? DECO_COLOR : FLOOR_COLORS[floorIdx % FLOOR_COLORS.length];
+    const actorTags = actor.tags || [];
+    const isGroundActor = actorTags.some(t => t === 'ground' || t.startsWith('mainpath'));
+    const colorHex = (isDeco || isGroundActor) ? DECO_COLOR : FLOOR_COLORS[floorIdx % FLOOR_COLORS.length];
 
     // Build geometry based on shape type
     const size = actor.actualSize || actor.boxSize;
@@ -724,10 +726,11 @@ function buildScene(data) {
     actorMeshes.push(mesh);
     actorDataMap.set(mesh.uuid, actor);
 
-    // Hide ground/mainpath tagged actors — walkable overlay replaces their visual
+    // Ground/mainpath tagged actors — hidden by default, shown when Deco is on
     const tags = actor.tags || [];
     if (tags.some(t => t === 'ground' || t.startsWith('mainpath'))) {
-      mesh.visible = false;
+      mesh.visible = showDecoration;
+      mesh.userData.isGroundActor = true;
     }
 
     if (isDeco) {
@@ -987,6 +990,75 @@ function computeGroundSurfaceZ(ueX, ueY, actor) {
   return obb.center[2] + obb.fwd[2][0]*lx + obb.fwd[2][1]*ly + obb.fwd[2][2]*lz;
 }
 
+// Transform a point from actor local space (UE coords) to UE world coords
+function ueLocalToWorld(lx, ly, lz, actor) {
+  const loc = actor.location;
+  const rot = actor.rotation;
+  if (!loc || !rot) return [lx, ly, lz];
+
+  const d2r = Math.PI / 180;
+  const yaw_r = rot.yaw * d2r, pitch_r = rot.pitch * d2r, roll_r = rot.roll * d2r;
+  const cy = Math.cos(yaw_r), sy = Math.sin(yaw_r);
+  const cp = Math.cos(pitch_r), sp = Math.sin(pitch_r);
+  const cr = Math.cos(roll_r), sr = Math.sin(roll_r);
+
+  // Forward rotation matrix (local→world), same as getActorOBB
+  const m00 = cy*cp,          m01 = cy*sp*sr - sy*cr,   m02 = -(cy*sp*cr + sy*sr);
+  const m10 = sy*cp,          m11 = sy*sp*sr + cy*cr,   m12 = -(sy*sp*cr - cy*sr);
+  const m20 = sp,             m21 = -cp*sr,             m22 = cp*cr;
+
+  return [
+    loc.x + m00*lx + m01*ly + m02*lz,
+    loc.y + m10*lx + m11*ly + m12*lz,
+    loc.z + m20*lx + m21*ly + m22*lz
+  ];
+}
+
+function generateStairsOverlay(actor, stencilRef) {
+  const props = actor.shapeProperties || {};
+  if (!props.stairsSize) return null;
+  const sc = actor.scale || { x: 1, y: 1, z: 1 };
+  const sx = props.stairsSize.x * sc.x;  // width
+  const sy = props.stairsSize.y * sc.y;  // depth (progression)
+  const sz = props.stairsSize.z * sc.z;  // total height
+
+  // 4 corners in UE local space (corner pivot):
+  // bottom-left(0,0,0), bottom-right(sx,0,0), top-right(sx,sy,sz), top-left(0,sy,sz)
+  const p0 = ueLocalToWorld(0,  0,  0,  actor);
+  const p1 = ueLocalToWorld(sx, 0,  0,  actor);
+  const p2 = ueLocalToWorld(sx, sy, sz, actor);
+  const p3 = ueLocalToWorld(0,  sy, sz, actor);
+
+  // Convert UE world → Three.js: (ueX, ueZ+offset, ueY)
+  const off = 2;
+  const positions = new Float32Array([
+    p0[0], p0[2]+off, p0[1],
+    p1[0], p1[2]+off, p1[1],
+    p2[0], p2[2]+off, p2[1],
+    p3[0], p3[2]+off, p3[1]
+  ]);
+  const indices = new Uint32Array([0,1,2, 0,2,3]);
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setIndex(new THREE.BufferAttribute(indices, 1));
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x44cc44,
+    side: THREE.DoubleSide,
+    stencilWrite: true,
+    stencilRef: stencilRef,
+    stencilFunc: THREE.NotEqualStencilFunc,
+    stencilZPass: THREE.ReplaceStencilOp,
+    stencilFail: THREE.KeepStencilOp,
+    stencilZFail: THREE.KeepStencilOp
+  });
+
+  const overlay = new THREE.Mesh(geom, mat);
+  overlay.renderOrder = 1;
+  return overlay;
+}
+
 function generateWalkableOverlay() {
   clearWalkableOverlays();
   _actorOBBCache.clear();
@@ -1083,6 +1155,28 @@ function generateWalkableOverlay() {
     else scene.add(overlay);
 
     walkableOverlayMeshes.push(overlay);
+  }
+
+  // Second pass: generate ramp overlays for ground-tagged stairs without walkableGrid
+  for (const actor of levelData.actors) {
+    const tags = actor.tags || [];
+    if (!tags.some(t => t === 'ground' || t.startsWith('mainpath'))) continue;
+    if (actor.walkableGrid) continue;
+    if (actor.shapeType !== 'stairs') continue;
+
+    const floorIdx = actor.floor != null ? actor.floor : 0;
+    if (!(floorIdx in floorStencilRef)) floorStencilRef[floorIdx] = nextStencilRef++;
+    const stencilRef = floorStencilRef[floorIdx];
+
+    const stairsOverlay = generateStairsOverlay(actor, stencilRef);
+    if (!stairsOverlay) continue;
+    stairsOverlay.userData.floor = floorIdx;
+
+    const group = floorGroups[floorIdx];
+    if (group) group.add(stairsOverlay);
+    else scene.add(stairsOverlay);
+
+    walkableOverlayMeshes.push(stairsOverlay);
   }
 }
 
@@ -1426,6 +1520,14 @@ function setFloor(floor) {
     if (decoGroup) decoGroup.visible = floorVisible && showDecoration;
   });
 
+  // Ground actors follow decoration toggle per floor
+  actorMeshes.forEach(m => {
+    if (m.userData.isGroundActor) {
+      const floorVisible = (floor === 'all' || m.userData.floor === floor);
+      m.visible = floorVisible && showDecoration;
+    }
+  });
+
   // Explicitly toggle label visibility per floor
   // (CSS2DRenderer may not fully respect ancestor visible in all versions)
   for (const [name, labelObj] of Object.entries(labelObjects)) {
@@ -1456,6 +1558,14 @@ function toggleDecoration() {
     const decoGroup = decorationGroups[fi];
     const floorVisible = (activeFloor === 'all' || fi === activeFloor);
     if (decoGroup) decoGroup.visible = floorVisible && showDecoration;
+  });
+
+  // Toggle ground/mainpath actor visibility with decoration
+  actorMeshes.forEach(m => {
+    if (m.userData.isGroundActor) {
+      const floorVisible = (activeFloor === 'all' || m.userData.floor === activeFloor);
+      m.visible = floorVisible && showDecoration;
+    }
   });
 }
 
