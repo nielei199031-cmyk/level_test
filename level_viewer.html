@@ -155,6 +155,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
 .cam-speed-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; }
 .cam-speed-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: none; cursor: pointer; }
 .cam-speed-val { font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); min-width: 24px; text-align: right; }
+
+/* Toolbar dropdown menus */
+.toolbar-dropdown { position: relative; }
+.toolbar-dropdown-btn::after { content: ' \25BE'; font-size: 9px; opacity: 0.5; }
+.toolbar-dropdown-panel { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 160px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.45); padding: 4px; z-index: 20; }
+.toolbar-dropdown.open > .toolbar-dropdown-panel { display: flex; flex-direction: column; gap: 2px; }
+.toolbar-dropdown-panel .btn { width: 100%; justify-content: flex-start; border: none; border-radius: 4px; }
+.toolbar-dropdown-panel .btn:hover { background: var(--bg-hover); }
+.toolbar-dropdown-panel .dropdown-separator { height: 1px; background: var(--border-subtle); margin: 3px 4px; }
+.toolbar-dropdown-panel .dropdown-slider-row { padding: 4px 8px; }
 </style>
 
 <script type="importmap">
@@ -192,26 +202,48 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
       <div class="toolbar-stat" id="stat-floors"></div>
     </div>
     <div class="toolbar-right">
-      <button class="btn active" id="btn-deco-toggle" title="Toggle decoration layer">Deco</button>
-      <button class="btn" id="btn-top" title="Top-down view">Top</button>
-      <button class="btn" id="btn-front" title="Front view">Front</button>
-      <button class="btn" id="btn-reset" title="Reset camera">Reset</button>
-      <button class="btn" id="btn-reload" title="Load another JSON">Load</button>
-      <button class="btn" id="btn-export-labels" title="Export labels">Labels&darr;</button>
-      <button class="btn" id="btn-import-labels" title="Import labels">Labels&uarr;</button>
-      <button class="btn" id="btn-share" title="Export self-contained HTML for sharing" style="color:var(--green);border-color:rgba(80,184,122,0.3);">Share</button>
-      <div class="toolbar-divider"></div>
-      <button class="btn" id="btn-eraser" title="Eraser tool - erase walkable areas">Eraser</button>
-      <div class="cam-speed-group" id="eraser-radius-group" style="display:none;">
-        <label>R</label>
-        <input type="range" class="cam-speed-slider" id="eraser-radius-slider" min="50" max="500" step="10" value="150">
-        <span class="cam-speed-val" id="eraser-radius-val">150</span>
+      <div class="toolbar-dropdown" id="dropdown-view">
+        <button class="btn toolbar-dropdown-btn">View</button>
+        <div class="toolbar-dropdown-panel">
+          <button class="btn" id="btn-top" title="Top-down view">Top</button>
+          <button class="btn" id="btn-front" title="Front view">Front</button>
+          <button class="btn" id="btn-reset" title="Reset camera">Reset</button>
+          <div class="dropdown-separator"></div>
+          <div class="dropdown-slider-row">
+            <div class="cam-speed-group">
+              <label>Speed</label>
+              <input type="range" class="cam-speed-slider" id="cam-speed-slider" min="0" max="1" step="0.01" value="0.5">
+              <span class="cam-speed-val" id="cam-speed-val">0.50</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="toolbar-divider"></div>
-      <div class="cam-speed-group">
-        <label>Speed</label>
-        <input type="range" class="cam-speed-slider" id="cam-speed-slider" min="0" max="1" step="0.01" value="0.5">
-        <span class="cam-speed-val" id="cam-speed-val">0.50</span>
+      <div class="toolbar-dropdown" id="dropdown-tools">
+        <button class="btn toolbar-dropdown-btn" id="btn-tools">Tools</button>
+        <div class="toolbar-dropdown-panel">
+          <button class="btn" id="btn-eraser" title="Eraser tool - erase walkable areas">Eraser</button>
+          <div class="dropdown-slider-row" id="eraser-radius-group" style="display:none;">
+            <div class="cam-speed-group">
+              <label>R</label>
+              <input type="range" class="cam-speed-slider" id="eraser-radius-slider" min="50" max="500" step="10" value="150">
+              <span class="cam-speed-val" id="eraser-radius-val">150</span>
+            </div>
+          </div>
+          <div class="dropdown-separator"></div>
+          <button class="btn active" id="btn-deco-toggle" title="Toggle decoration layer">Deco</button>
+          <div class="dropdown-separator"></div>
+          <button class="btn" id="btn-reset-walkable" title="Reset all erased walkable areas">Reset Walkable</button>
+        </div>
+      </div>
+      <div class="toolbar-dropdown" id="dropdown-file">
+        <button class="btn toolbar-dropdown-btn">File</button>
+        <div class="toolbar-dropdown-panel">
+          <button class="btn" id="btn-reload" title="Load another JSON">Load</button>
+          <button class="btn" id="btn-export-labels" title="Export labels">Labels&darr;</button>
+          <button class="btn" id="btn-import-labels" title="Import labels">Labels&uarr;</button>
+          <div class="dropdown-separator"></div>
+          <button class="btn" id="btn-share" title="Export self-contained HTML for sharing" style="color:var(--green);">Share</button>
+        </div>
       </div>
     </div>
   </div>
@@ -340,6 +372,8 @@ let pathIdCounter = 0;
 let isErasing = false;
 let eraserRadius = 150;       // world-space radius
 let eraserMouseDown = false;
+let eraserUndoStack = [];         // [{cells: [{mesh, cellIdx, r, c, gridRef, vi, oldY: [4 floats]}]}]
+let currentEraserStroke = null;   // accumulates during one pointerdown→pointerup
 
 // WASD fly camera state
 const keysPressed = {};
@@ -967,6 +1001,11 @@ function generateWalkableOverlay() {
     const wg = actor.walkableGrid;
     if (!wg) continue;
 
+    // Save original grid on first call (for reset)
+    if (!wg._originalGrid) {
+      wg._originalGrid = wg.grid.map(row => row.slice());
+    }
+
     const { originX, originY, cellSize, cols, rows, grid } = wg;
     const floorIdx = actor.floor != null ? actor.floor : 0;
 
@@ -1052,6 +1091,7 @@ function generateWalkableOverlay() {
 function toggleEraser() {
   isErasing = !isErasing;
   const btn = document.getElementById('btn-eraser');
+  const toolsBtn = document.getElementById('btn-tools');
   const viewport = document.getElementById('viewport');
   const radiusGroup = document.getElementById('eraser-radius-group');
   const eraserCursor = document.getElementById('eraser-cursor');
@@ -1060,6 +1100,7 @@ function toggleEraser() {
     // Mutual exclusion with drawing
     if (isDrawing) cancelDrawing();
     btn.classList.add('active');
+    if (toolsBtn) toolsBtn.classList.add('active');
     viewport.classList.add('eraser-mode');
     radiusGroup.style.display = '';
     eraserCursor.style.display = 'block';
@@ -1068,6 +1109,7 @@ function toggleEraser() {
     controls.enableZoom = false;
   } else {
     btn.classList.remove('active');
+    if (toolsBtn) toolsBtn.classList.remove('active');
     viewport.classList.remove('eraser-mode');
     radiusGroup.style.display = 'none';
     eraserCursor.style.display = 'none';
@@ -1134,8 +1176,13 @@ function eraseAt(event) {
       if (Math.abs(cx - ueX) > eraserRadius || Math.abs(cy - ueY) > eraserRadius) continue;
       const dist = Math.sqrt((cx - ueX) * (cx - ueX) + (cy - ueY) * (cy - ueY));
       if (dist <= eraserRadius) {
-        cell.gridRef[cell.r][cell.c] = 0;
+        // Save original Y values for undo before erasing
         const vb = cell.vi;
+        const oldY = [posAttr.getY(vb), posAttr.getY(vb+1), posAttr.getY(vb+2), posAttr.getY(vb+3)];
+        if (currentEraserStroke) {
+          currentEraserStroke.push({ mesh, gridRef: cell.gridRef, r: cell.r, c: cell.c, vi: vb, oldY });
+        }
+        cell.gridRef[cell.r][cell.c] = 0;
         for (let v = 0; v < 4; v++) posAttr.setY(vb + v, -99999);
         changed = true;
       }
@@ -1146,6 +1193,38 @@ function eraseAt(event) {
       mesh.geometry.computeBoundingSphere();
     }
   }
+}
+
+function undoEraserStroke() {
+  if (eraserUndoStack.length === 0) return;
+  const stroke = eraserUndoStack.pop();
+  // Group by mesh to batch geometry updates
+  const meshSet = new Set();
+  for (const cell of stroke) {
+    cell.gridRef[cell.r][cell.c] = 1;
+    const posAttr = cell.mesh.geometry.attributes.position;
+    for (let v = 0; v < 4; v++) posAttr.setY(cell.vi + v, cell.oldY[v]);
+    meshSet.add(cell.mesh);
+  }
+  for (const mesh of meshSet) {
+    mesh.geometry.attributes.position.needsUpdate = true;
+    mesh.geometry.computeBoundingSphere();
+  }
+}
+
+function resetWalkableOverlay() {
+  // Restore original grid data from levelData, then regenerate
+  if (!levelData) return;
+  for (const actor of levelData.actors) {
+    const wg = actor.walkableGrid;
+    if (!wg || !wg._originalGrid) continue;
+    // Deep copy original grid back
+    wg.grid = wg._originalGrid.map(row => row.slice());
+  }
+  eraserUndoStack = [];
+  currentEraserStroke = null;
+  generateWalkableOverlay();
+  applyLabels();
 }
 
 // ============================================================
@@ -1645,6 +1724,7 @@ function onPointerDown(event) {
   // Eraser mode
   if (isErasing) {
     eraserMouseDown = true;
+    currentEraserStroke = [];  // start new stroke
     eraseAt(event);
     return;
   }
@@ -1982,6 +2062,7 @@ function bindEvents() {
   document.getElementById('btn-top').onclick = topView;
   document.getElementById('btn-front').onclick = frontView;
   document.getElementById('btn-deco-toggle').onclick = toggleDecoration;
+  document.getElementById('btn-reset-walkable').onclick = resetWalkableOverlay;
   const reloadBtn = document.getElementById('btn-reload');
   if (reloadBtn && fileInput) reloadBtn.onclick = () => fileInput.click();
   document.getElementById('btn-share').onclick = exportShareHTML;
@@ -2011,7 +2092,46 @@ function bindEvents() {
     eraserValSpan.textContent = eraserRadius;
   };
   window.addEventListener('pointerup', e => {
-    if (e.button === 0) eraserMouseDown = false;
+    if (e.button === 0) {
+      eraserMouseDown = false;
+      // Finalize stroke for undo
+      if (currentEraserStroke && currentEraserStroke.length > 0) {
+        eraserUndoStack.push(currentEraserStroke);
+      }
+      currentEraserStroke = null;
+    }
+  });
+
+  // Toolbar dropdown menus
+  document.querySelectorAll('.toolbar-dropdown-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dropdown = btn.closest('.toolbar-dropdown');
+      const wasOpen = dropdown.classList.contains('open');
+      // Close all dropdowns first
+      document.querySelectorAll('.toolbar-dropdown.open').forEach(d => d.classList.remove('open'));
+      if (!wasOpen) dropdown.classList.add('open');
+    });
+  });
+  // Close dropdown when clicking action buttons inside panels (not sliders)
+  document.querySelectorAll('.toolbar-dropdown-panel .btn').forEach(btn => {
+    const isEraser = btn.id === 'btn-eraser';
+    const isDeco = btn.id === 'btn-deco-toggle';
+    btn.addEventListener('click', () => {
+      // Keep Tools panel open for Eraser/Deco (toggle state needs to stay visible)
+      if (isEraser || isDeco) return;
+      document.querySelectorAll('.toolbar-dropdown.open').forEach(d => d.classList.remove('open'));
+    });
+  });
+  // Click outside closes all dropdowns
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.toolbar-dropdown')) {
+      document.querySelectorAll('.toolbar-dropdown.open').forEach(d => d.classList.remove('open'));
+    }
+  });
+  // Stop slider interactions from closing the dropdown
+  document.querySelectorAll('.toolbar-dropdown-panel input[type="range"]').forEach(el => {
+    el.addEventListener('click', e => e.stopPropagation());
   });
 
   // Viewport interaction
@@ -2071,6 +2191,7 @@ function bindEvents() {
 
     // Eraser shortcut
     if (isErasing && e.key === 'Escape') toggleEraser();
+    if (key === 'z' && (e.ctrlKey || e.metaKey) && !isDrawing) { undoEraserStroke(); e.preventDefault(); }
 
     // Drawing shortcuts
     if (isDrawing) {
