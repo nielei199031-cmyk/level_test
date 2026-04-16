@@ -72,7 +72,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
 @keyframes pulse-border { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 8px rgba(80,184,122,0.3); } }
 
 /* Sidebar */
-#sidebar { grid-area: sidebar; display: flex; flex-direction: column; gap: 0; background: var(--bg-primary); border-right: 1px solid var(--border-subtle); overflow-y: auto; padding-bottom: 16px; }
+#sidebar { grid-area: sidebar; display: flex; flex-direction: column; gap: 0; background: var(--bg-primary); border-right: 1px solid var(--border-subtle); overflow-y: auto; padding-bottom: 16px; transition: margin-left 0.25s ease; }
+#app.sidebar-collapsed { grid-template-columns: 0px 1fr; }
+#app.sidebar-collapsed #sidebar { margin-left: -240px; overflow: hidden; }
+#sidebar-toggle { position: fixed; left: 240px; top: 50%; transform: translateY(-50%); width: 14px; height: 48px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-left: none; border-radius: 0 4px 4px 0; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 20; color: var(--text-muted); font-size: 10px; padding: 0; transition: left 0.25s ease, color 0.15s; }
+#sidebar-toggle:hover { color: var(--text-primary); background: var(--bg-elevated); }
+#app.sidebar-collapsed #sidebar-toggle { left: 0; }
 .sidebar-section { padding: 14px 14px 10px; border-bottom: 1px solid var(--border-subtle); }
 .sidebar-section:last-child { border-bottom: none; }
 .section-title { font-family: var(--font-mono); font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 10px; }
@@ -248,6 +253,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-v
     </div>
   </div>
 
+  <button id="sidebar-toggle" title="Toggle sidebar">&#9664;</button>
   <div id="sidebar">
     <div class="sidebar-section">
       <div class="section-title">Floors</div>
@@ -2385,6 +2391,13 @@ function bindEvents() {
   const reloadBtn = document.getElementById('btn-reload');
   if (reloadBtn && fileInput) reloadBtn.onclick = () => fileInput.click();
   document.getElementById('btn-share').onclick = exportShareHTML;
+  document.getElementById('sidebar-toggle').onclick = () => {
+    const app = document.getElementById('app');
+    const btn = document.getElementById('sidebar-toggle');
+    app.classList.toggle('sidebar-collapsed');
+    btn.innerHTML = app.classList.contains('sidebar-collapsed') ? '&#9654;' : '&#9664;';
+    setTimeout(onResize, 260);
+  };
   document.getElementById('btn-export-labels').onclick = exportLabels;
   document.getElementById('btn-import-labels').onclick = () => document.getElementById('label-file-input').click();
   document.getElementById('label-file-input').onchange = (e) => { if (e.target.files[0]) importLabels(e.target.files[0]); };
