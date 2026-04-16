@@ -24,7 +24,7 @@ FLOOR_TAG_PATTERN = re.compile(r'^floor_(\d+)$', re.IGNORECASE)
 BOX_SIZE_PROPS = ["box_size", "BoxSize", "box_extent", "BoxExtent", "Size"]
 
 # Shape types supported by BlockoutTools
-SHAPE_KEYWORDS = ['box', 'cone', 'cylinder', 'sphere', 'ramp', 'stairs', 'doorway', 'window']
+SHAPE_KEYWORDS = ['box', 'cone', 'cylinder', 'sphere', 'ramp', 'stairs', 'doorway', 'window', 'railing']
 
 
 # ============================================================
@@ -461,6 +461,112 @@ def extract_actor_data(actor):
                         shape_props['numberOfSteps'] = int(val)
                         break
                 except:
+                    continue
+
+        if shape_type == 'ramp':
+            for name in ['RampSize', 'ramp_size', 'rampsize']:
+                try:
+                    val = actor.get_editor_property(name)
+                    if val is not None:
+                        shape_props['rampSize'] = vector_to_dict(val)
+                        break
+                except:
+                    continue
+
+        if shape_type == 'railing':
+            # Debug: detailed property read logging (first railing actor only)
+            _is_first_railing = not hasattr(extract_actor_data, '_railing_logged')
+            if _is_first_railing:
+                extract_actor_data._railing_logged = True
+                unreal.log(f"[Railing DEBUG] First railing actor: {actor.get_name()}, class: {actor.get_class().get_name()}")
+
+            for name in ['RailingSections', 'railing_sections', 'railingsections', 'railingSections']:
+                try:
+                    val = actor.get_editor_property(name)
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] RailingSections: name='{name}' -> val={val}, type={type(val)}")
+                    if val is not None:
+                        shape_props['railingSections'] = int(val)
+                        break
+                except Exception as e:
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] RailingSections: name='{name}' -> FAILED: {e}")
+                    continue
+            for name in ['SectionLength', 'section_length', 'sectionlength', 'SectionLenght', 'section_lenght', 'sectionlenght', 'sectionLength', 'sectionLenght']:
+                try:
+                    val = actor.get_editor_property(name)
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] SectionLength: name='{name}' -> val={val}, type={type(val)}")
+                    if val is not None:
+                        shape_props['sectionLength'] = round(float(val), 2)
+                        break
+                except Exception as e:
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] SectionLength: name='{name}' -> FAILED: {e}")
+                    continue
+            for name in ['SkewElevation', 'skew_elevation', 'skewelevation', 'skewElevation']:
+                try:
+                    val = actor.get_editor_property(name)
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] SkewElevation: name='{name}' -> val={val}, type={type(val)}")
+                    if val is not None:
+                        shape_props['skewElevation'] = round(float(val), 2)
+                        break
+                except Exception as e:
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] SkewElevation: name='{name}' -> FAILED: {e}")
+                    continue
+            for name in ['HasEndPole', 'bHasEndPole', 'has_end_pole', 'b_has_end_pole', 'hasendpole', 'hasEndPole', 'End Pole', 'EndPole']:
+                try:
+                    val = actor.get_editor_property(name)
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] HasEndPole: name='{name}' -> val={val}, type={type(val)}")
+                    if val is not None:
+                        shape_props['hasEndPole'] = bool(val)
+                        break
+                except Exception as e:
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] HasEndPole: name='{name}' -> FAILED: {e}")
+                    continue
+
+            # Fallback: try root_component for HasEndPole
+            if 'hasEndPole' not in shape_props:
+                root = actor.root_component
+                if root and _is_first_railing:
+                    unreal.log(f"[Railing DEBUG] Trying root_component: {root.get_class().get_name()}")
+                if root:
+                    for name in ['HasEndPole', 'bHasEndPole', 'has_end_pole', 'hasEndPole']:
+                        try:
+                            val = root.get_editor_property(name)
+                            if _is_first_railing:
+                                unreal.log(f"[Railing DEBUG] root.HasEndPole: name='{name}' -> val={val}, type={type(val)}")
+                            if val is not None:
+                                shape_props['hasEndPole'] = bool(val)
+                                break
+                        except Exception as e:
+                            if _is_first_railing:
+                                unreal.log(f"[Railing DEBUG] root.HasEndPole: name='{name}' -> FAILED: {e}")
+                            continue
+
+            if _is_first_railing:
+                unreal.log(f"[Railing DEBUG] Final shape_props: {shape_props}")
+
+            for name in ['RailingType', 'railing_type', 'railingtype', 'railingType']:
+                try:
+                    val = actor.get_editor_property(name)
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] RailingType: name='{name}' -> val={val}, type={type(val)}")
+                    if val is not None:
+                        # Enum: convert to string
+                        s = str(val)
+                        if 'CLOSE' in s.upper() or 'CLOSED' in s.upper():
+                            shape_props['railingType'] = 'close'
+                        else:
+                            shape_props['railingType'] = 'open'
+                        break
+                except Exception as e:
+                    if _is_first_railing:
+                        unreal.log(f"[Railing DEBUG] RailingType: name='{name}' -> FAILED: {e}")
                     continue
 
         # Always extract world-space bounds as fallback for non-box types

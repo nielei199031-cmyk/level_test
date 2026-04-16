@@ -624,12 +624,199 @@ function createStairsGeom(actor) {
   return { geometry: geom, useScale: true, scaleVec: new THREE.Vector3(scale.x, scale.z, scale.y) };
 }
 
+function createRampGeom(actor) {
+  const props = actor.shapeProperties || {};
+  const scale = actor.scale || { x: 1, y: 1, z: 1 };
+
+  let sx, sy, sz;
+  if (props.rampSize) {
+    sx = props.rampSize.x;  // width (UE X)
+    sy = props.rampSize.y;  // depth/length (UE Y)
+    sz = props.rampSize.z;  // height (UE Z)
+  } else {
+    const size = actor.actualSize || actor.boxSize;
+    if (!size) return null;
+    return createBoxGeom(ueSize(size.x, size.y, size.z));
+  }
+
+  // UE ramp: wedge shape, corner pivot at (0,0,0)
+  // UE coords: X=width, Y=depth(slope direction), Z=height
+  // Three.js after ueSize: w=X, d=Y, h=Z
+  // Y=0: low end (height 0),  Y=sy: high end (full height sz)
+  // 6 vertices:
+  //   0: (0,  0,  0)   1: (sx, 0,  0)    — bottom front (low end)
+  //   2: (0,  0,  sy)  3: (sx, 0,  sy)   — bottom back
+  //   4: (0,  sz, sy)  5: (sx, sz, sy)   — top back (full height)
+  // In Three.js coords: vertex(ueX, ueZ, ueY)
+  const positions = [
+    0,  0,  0,     sx, 0,  0,      // 0,1 bottom low end
+    0,  0,  sy,    sx, 0,  sy,     // 2,3 bottom high end
+    0,  sz, sy,    sx, sz, sy      // 4,5 top high end
+  ];
+
+  const indices = [
+    // bottom face
+    0, 1, 3,   0, 3, 2,
+    // back face (full height rect at Y=sy)
+    2, 3, 5,   2, 5, 4,
+    // slope (from low end Y=0 to top of high end Y=sy)
+    0, 5, 1,   0, 4, 5,
+    // left face (triangle)
+    0, 2, 4,
+    // right face (triangle)
+    1, 5, 3
+  ];
+
+  const geom = new THREE.BufferGeometry();
+  geom.setIndex(indices);
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeVertexNormals();
+
+  return { geometry: geom, useScale: true, scaleVec: new THREE.Vector3(scale.x, scale.z, scale.y) };
+}
+
+function createRailingGeom(actor) {
+  const props = actor.shapeProperties || {};
+  const scale = actor.scale || { x: 1, y: 1, z: 1 };
+  const sections = props.railingSections || 1;
+  const secLen = props.sectionLength || 200;
+  const skew = props.skewElevation || 0;
+  const hasEnd = props.hasEndPole !== false;
+  const railType = props.railingType || 'open';
+
+  // Fixed preset dimensions (UE units = cm*100? no, UE uses cm)
+  const postH = 100;    // post height
+  const postW = 8;      // post thickness (square cross-section)
+  const railH = 5;      // rail thickness
+  const railD = 5;      // rail depth (same as thickness)
+  const numRails = 3;   // 3 horizontal rails
+
+  // Total length along X axis
+  const totalLen = sections * secLen;
+  // Total elevation rise
+  const totalRise = skew;
+
+  // Number of posts: sections + 1 (if hasEndPole), otherwise sections (no last post)
+  const numPosts = hasEnd ? sections + 1 : sections;
+
+  const positions = [];
+  const indices = [];
+  let vIdx = 0;
+
+  // Helper: add a box defined by (x0,y0,z0) to (x1,y1,z1)
+  // In railing local space: X = length direction, Z = height (UE), Y = depth (thin)
+  // Three.js mapping: (ueX, ueZ, ueY) => positions use (x, z_height, y_depth)
+  function addBox(x0, y0, z0, x1, y1, z1) {
+    const base = vIdx;
+    // 8 corners: front-bottom-left to back-top-right
+    positions.push(
+      x0, z0, y0,  x1, z0, y0,  x1, z1, y0,  x0, z1, y0,  // front face (y=y0)
+      x0, z0, y1,  x1, z0, y1,  x1, z1, y1,  x0, z1, y1   // back face (y=y1)
+    );
+    const v = base;
+    indices.push(
+      v+0,v+2,v+1, v+0,v+3,v+2, // front
+      v+4,v+5,v+6, v+4,v+6,v+7, // back
+      v+3,v+7,v+6, v+3,v+6,v+2, // top
+      v+0,v+1,v+5, v+0,v+5,v+4, // bottom
+      v+1,v+2,v+6, v+1,v+6,v+5, // right
+      v+0,v+4,v+7, v+0,v+7,v+3  // left
+    );
+    vIdx += 8;
+  }
+
+  // Generate posts
+  for (let i = 0; i < numPosts; i++) {
+    const px = i * secLen;
+    const baseZ = (totalLen > 0) ? (px / totalLen) * totalRise : 0;
+    // Post: centered on depth, from baseZ to baseZ+postH
+    addBox(
+      px - postW/2, -postW/2, baseZ,
+      px + postW/2,  postW/2, baseZ + postH
+    );
+  }
+
+  // Generate rails or panels for each section
+  for (let s = 0; s < sections; s++) {
+    const x0 = s * secLen;
+    const x1 = (s + 1) * secLen;
+    const z0base = (totalLen > 0) ? (x0 / totalLen) * totalRise : 0;
+    const z1base = (totalLen > 0) ? (x1 / totalLen) * totalRise : 0;
+
+    if (railType === 'close') {
+      // Closed: 3 panel fills between rails (solid sections)
+      // Just make one big panel from bottom rail to top rail
+      const panelBottom = z0base + postH * 0.15;
+      const panelTop0 = z0base + postH * 0.9;
+      const panelTop1 = z1base + postH * 0.9;
+      // Use a sloped box approximation: 4 quads forming a thin slab
+      // For simplicity with skew, generate as a thin box at average height
+      const avgBottom = (z0base + z1base) / 2 + postH * 0.15;
+      const avgTop = (z0base + z1base) / 2 + postH * 0.9;
+      // Actually build properly with skew: use 8 vertices
+      const base = vIdx;
+      const pd = railD / 2;
+      positions.push(
+        x0, z0base + postH*0.15, -pd,  x1, z1base + postH*0.15, -pd,
+        x1, z1base + postH*0.9,  -pd,  x0, z0base + postH*0.9,  -pd,
+        x0, z0base + postH*0.15,  pd,  x1, z1base + postH*0.15,  pd,
+        x1, z1base + postH*0.9,   pd,  x0, z0base + postH*0.9,   pd
+      );
+      const v = base;
+      indices.push(
+        v+0,v+2,v+1, v+0,v+3,v+2,
+        v+4,v+5,v+6, v+4,v+6,v+7,
+        v+3,v+7,v+6, v+3,v+6,v+2,
+        v+0,v+1,v+5, v+0,v+5,v+4,
+        v+1,v+2,v+6, v+1,v+6,v+5,
+        v+0,v+4,v+7, v+0,v+7,v+3
+      );
+      vIdx += 8;
+    } else {
+      // Open: 3 horizontal rails
+      for (let r = 0; r < numRails; r++) {
+        // Rail positions: evenly spaced from ~15% to ~90% of post height
+        const frac = 0.15 + (r / (numRails - 1)) * 0.75;
+        const rz0 = z0base + postH * frac - railH/2;
+        const rz1 = z1base + postH * frac - railH/2;
+        // Build a skewed rail box with 8 vertices
+        const base = vIdx;
+        const rd = railD / 2;
+        positions.push(
+          x0, rz0,         -rd,  x1, rz1,         -rd,
+          x1, rz1 + railH, -rd,  x0, rz0 + railH, -rd,
+          x0, rz0,          rd,  x1, rz1,          rd,
+          x1, rz1 + railH,  rd,  x0, rz0 + railH,  rd
+        );
+        const v = base;
+        indices.push(
+          v+0,v+2,v+1, v+0,v+3,v+2,
+          v+4,v+5,v+6, v+4,v+6,v+7,
+          v+3,v+7,v+6, v+3,v+6,v+2,
+          v+0,v+1,v+5, v+0,v+5,v+4,
+          v+1,v+2,v+6, v+1,v+6,v+5,
+          v+0,v+4,v+7, v+0,v+7,v+3
+        );
+        vIdx += 8;
+      }
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setIndex(indices);
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeVertexNormals();
+
+  return { geometry: geom, useScale: true, scaleVec: new THREE.Vector3(scale.x, scale.z, scale.y) };
+}
+
 function createActorGeometry(actor, dim) {
   const shapeType = actor.shapeType || 'box';
   switch (shapeType) {
     case 'cylinder': return createCylinderGeom(actor);
     case 'stairs': return createStairsGeom(actor);
-    // Future shape types go here
+    case 'ramp': return createRampGeom(actor);
+    case 'railing': return createRailingGeom(actor);
     default: return createBoxGeom(dim);
   }
 }
@@ -701,6 +888,20 @@ function buildScene(data) {
       minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + sw);
       minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + sh);
       minZ = Math.min(minZ, pos.z); maxZ = Math.max(maxZ, pos.z + sd);
+    } else if (shapeType === 'ramp' && props.rampSize) {
+      const rw = props.rampSize.x * s.x;
+      const rd = props.rampSize.y * s.y;
+      const rh = props.rampSize.z * s.z;
+      minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + rw);
+      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + rh);
+      minZ = Math.min(minZ, pos.z); maxZ = Math.max(maxZ, pos.z + rd);
+    } else if (shapeType === 'railing' && props.sectionLength) {
+      const totalLen = (props.railingSections || 1) * props.sectionLength * s.x;
+      const railH = 100 * s.z; // post height
+      const rise = (props.skewElevation || 0) * s.z;
+      minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + totalLen);
+      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + railH + Math.max(rise, 0));
+      minZ = Math.min(minZ, pos.z - 4 * s.y); maxZ = Math.max(maxZ, pos.z + 4 * s.y);
     } else if (dim) {
       minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x + dim.w);
       minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y + dim.h);
@@ -1693,6 +1894,13 @@ function getLabelBounds(mesh) {
   if (shapeType === 'stairs' && props.stairsSize) {
     // Geom in local space: x=[0..sx], y=[0..sz], z=[0..sy]
     return { minX: 0, maxX: props.stairsSize.x, minY: 0, maxY: props.stairsSize.z, minZ: 0, maxZ: props.stairsSize.y };
+  }
+  if (shapeType === 'ramp' && props.rampSize) {
+    return { minX: 0, maxX: props.rampSize.x, minY: 0, maxY: props.rampSize.z, minZ: 0, maxZ: props.rampSize.y };
+  }
+  if (shapeType === 'railing' && props.sectionLength) {
+    const totalLen = (props.railingSections || 1) * props.sectionLength;
+    return { minX: -4, maxX: totalLen + 4, minY: 0, maxY: 100 + (props.skewElevation || 0), minZ: -4, maxZ: 4 };
   }
   // Box: corner pivot, dim from ueSize: w=X, h=Z, d=Y
   const dim = ueSize(sz.x, sz.y, sz.z);
